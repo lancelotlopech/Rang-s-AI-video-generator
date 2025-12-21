@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useMemo } from "react"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
+import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
@@ -11,12 +12,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Video, Loader2, Download, Play, AlertCircle, Clock, CheckCircle2, XCircle, Trash2, Image as ImageIcon, Terminal, ChevronDown, ChevronUp } from "lucide-react"
+import { Video, Loader2, Download, Play, AlertCircle, Clock, CheckCircle2, XCircle, Trash2, Image as ImageIcon, Terminal, ChevronDown, ChevronUp, UploadCloud } from "lucide-react"
 import { toast } from "sonner"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Progress } from "@/components/ui/progress"
 import { cn } from "@/lib/utils"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Switch } from "@/components/ui/switch"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 
 interface VideoTask {
@@ -66,11 +68,15 @@ export default function VideoPage() {
   const [duration, setDuration] = useState("5")
   const [selectedModel, setSelectedModel] = useState("")
   const [customModel, setCustomModel] = useState("")
-  // const [imageUrls, setImageUrls] = useState("") // Deprecated
-  const [uploadedImages, setUploadedImages] = useState<string[]>([]) // Base64 Data URLs
+  const [imageUrlInput, setImageUrlInput] = useState("")
+  const [uploadedImages, setUploadedImages] = useState<string[]>([]) // Image URLs
+  const [isUploading, setIsUploading] = useState(false)
+  const [enhancePrompt, setEnhancePrompt] = useState(true)
+  const [enableUpsample, setEnableUpsample] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [showDebug, setShowDebug] = useState(false) // New: Debug mode
   const [expandedErrors, setExpandedErrors] = useState<Record<string, boolean>>({})
+  const [isHistoryOpen, setIsHistoryOpen] = useState(true)
 
   // Tasks State
   const [tasks, setTasks] = useState<VideoTask[]>([])
@@ -93,7 +99,7 @@ export default function VideoPage() {
     if (videoModels.length > 0 && !selectedModel) {
       setSelectedModel(videoModels[0].id)
     } else if (!selectedModel) {
-      setSelectedModel("veo3-fast") // Fallback default
+      setSelectedModel("sora-2") // Fallback default
     }
   }, [videoModels, selectedModel])
 
@@ -122,7 +128,23 @@ export default function VideoPage() {
   // Save tasks to LocalStorage
   useEffect(() => {
     if (isLoaded) {
-      localStorage.setItem('foxio_video_tasks', JSON.stringify(tasks))
+      try {
+        // Filter out large base64 images before saving to avoid QuotaExceededError
+        const tasksToSave = tasks.map(task => {
+          // If images contain base64 data (long strings), remove them
+          // Keep images if they are short URLs (e.g. < 500 chars)
+          const cleanImages = task.images?.filter(img => img.length < 1000)
+          
+          return {
+            ...task,
+            images: cleanImages && cleanImages.length > 0 ? cleanImages : undefined
+          }
+        })
+        localStorage.setItem('foxio_video_tasks', JSON.stringify(tasksToSave))
+      } catch (e) {
+        console.error("Failed to save tasks to localStorage", e)
+        // If quota exceeded, try to clear old tasks or just fail silently
+      }
     }
   }, [tasks, isLoaded])
 
@@ -224,6 +246,47 @@ export default function VideoPage() {
     }
   }, []) 
 
+  const handleUpload = async (file: File) => {
+    // Validate size (5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error(`Image ${file.name} is too large (max 5MB)`)
+      return
+    }
+    // Validate type
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      toast.error(`Image ${file.name} format not supported (JPG/PNG/WEBP only)`)
+      return
+    }
+
+    setIsUploading(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+
+      // Upload to tmpfiles.org
+      const res = await fetch('https://tmpfiles.org/api/v1/upload', {
+        method: 'POST',
+        body: formData
+      })
+      
+      const data = await res.json()
+      
+      if (data.status === 'success' && data.data.url) {
+        // Convert to direct link: https://tmpfiles.org/123/img.png -> https://tmpfiles.org/dl/123/img.png
+        const directUrl = data.data.url.replace('tmpfiles.org/', 'tmpfiles.org/dl/')
+        setUploadedImages(prev => [...prev, directUrl])
+        toast.success("Image uploaded successfully")
+      } else {
+        throw new Error("Upload failed")
+      }
+    } catch (e) {
+      console.error("Upload error", e)
+      toast.error("Failed to upload image. Please try using a URL instead.")
+    } finally {
+      setIsUploading(false)
+    }
+  }
+
   const handleGenerate = async () => {
     if (!prompt.trim()) {
       toast.error("Please enter a prompt")
@@ -265,7 +328,9 @@ export default function VideoPage() {
           aspectRatio, 
           duration,
           model: finalModel,
-          images: images 
+          images: images,
+          enhance_prompt: enhancePrompt,
+          enable_upsample: enableUpsample
         }),
       })
 
@@ -299,8 +364,9 @@ export default function VideoPage() {
       }))
 
       toast.info("Task submitted, processing in background...")
-      setPrompt("")
-      setUploadedImages([])
+      // Keep prompt and images as requested
+      // setPrompt("") 
+      // setUploadedImages([]) 
 
     } catch (err: any) {
       console.error(err)
@@ -335,7 +401,7 @@ export default function VideoPage() {
           <div>
             <h2 className="text-3xl font-bold tracking-tight">Ad Video Generator</h2>
             <p className="text-muted-foreground">
-              Produce engaging ad videos with Veo models.
+              Produce engaging ad videos with Sora & Veo models.
             </p>
           </div>
         </div>
@@ -349,9 +415,9 @@ export default function VideoPage() {
         </div>
       </div>
 
-      <div className="grid gap-8 lg:grid-cols-3">
-        {/* Left Column: Form */}
-        <div className="lg:col-span-1 space-y-6">
+      <div className="flex flex-col gap-8">
+        {/* Top: Form */}
+        <div className="w-full max-w-2xl mx-auto space-y-6">
           <div className="p-6 rounded-lg border bg-card text-card-foreground shadow-sm space-y-6">
             <div className="space-y-2">
               <Label>Video Script / Prompt</Label>
@@ -369,7 +435,7 @@ export default function VideoPage() {
               {/* Image Upload Area */}
               <div className="grid grid-cols-3 gap-2">
                 {uploadedImages.map((img, index) => (
-                  <div key={index} className="relative aspect-square rounded-md overflow-hidden border group">
+                  <div key={index} className="relative aspect-square rounded-md overflow-hidden border group bg-muted">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={img} alt={`Ref ${index}`} className="w-full h-full object-cover" />
                     <button
@@ -382,45 +448,57 @@ export default function VideoPage() {
                 ))}
                 
                 <div className="aspect-square rounded-md border-2 border-dashed flex flex-col items-center justify-center text-muted-foreground hover:bg-muted/50 transition-colors cursor-pointer relative">
-                  <input 
-                    type="file" 
-                    accept="image/jpeg,image/png,image/webp" 
-                    multiple
-                    className="absolute inset-0 opacity-0 cursor-pointer"
-                    onChange={(e) => {
-                      const files = Array.from(e.target.files || [])
-                      files.forEach(file => {
-                        // Validate size (5MB)
-                        if (file.size > 5 * 1024 * 1024) {
-                          toast.error(`Image ${file.name} is too large (max 5MB)`)
-                          return
-                        }
-                        // Validate type
-                        if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
-                          toast.error(`Image ${file.name} format not supported (JPG/PNG/WEBP only)`)
-                          return
-                        }
-
-                        const reader = new FileReader()
-                        reader.onload = (e) => {
-                          if (e.target?.result) {
-                            setUploadedImages(prev => [...prev, e.target!.result as string])
-                          }
-                        }
-                        reader.readAsDataURL(file)
-                      })
-                      // Reset input
-                      e.target.value = ''
-                    }}
-                  />
-                  <ImageIcon className="w-6 h-6 mb-1" />
-                  <span className="text-[10px]">Upload</span>
+                  {isUploading ? (
+                    <Loader2 className="w-6 h-6 animate-spin text-orange-500" />
+                  ) : (
+                    <>
+                      <input 
+                        type="file" 
+                        accept="image/jpeg,image/png,image/webp" 
+                        multiple
+                        className="absolute inset-0 opacity-0 cursor-pointer"
+                        onChange={(e) => {
+                          const files = Array.from(e.target.files || [])
+                          files.forEach(file => handleUpload(file))
+                          e.target.value = ''
+                        }}
+                      />
+                      <UploadCloud className="w-6 h-6 mb-1" />
+                      <span className="text-[10px]">Upload</span>
+                    </>
+                  )}
                 </div>
               </div>
+
+              {/* URL Input Fallback */}
+              <div className="flex gap-2 mt-2">
+                <Input 
+                  placeholder="Or paste image URL..." 
+                  value={imageUrlInput}
+                  onChange={(e) => setImageUrlInput(e.target.value)}
+                  className="h-8 text-xs"
+                />
+                <Button 
+                  variant="secondary"
+                  size="sm"
+                  className="h-8"
+                  onClick={() => {
+                    if (!imageUrlInput.trim()) return
+                    if (!imageUrlInput.startsWith('http')) {
+                      toast.error("Please enter a valid URL")
+                      return
+                    }
+                    setUploadedImages(prev => [...prev, imageUrlInput.trim()])
+                    setImageUrlInput("")
+                  }}
+                >
+                  Add URL
+                </Button>
+              </div>
+              
               <div className="text-[10px] text-muted-foreground space-y-1">
-                <p>• Supported formats: JPG, PNG, WEBP</p>
-                <p>• Max size: 5MB per image</p>
-                <p>• Recommended: Use images with the same aspect ratio as the video</p>
+                <p>• Images are automatically uploaded to a temporary host for API compatibility.</p>
+                <p>• Supported formats: JPG, PNG, WEBP (Max 5MB)</p>
               </div>
             </div>
             
@@ -432,41 +510,44 @@ export default function VideoPage() {
                     <SelectTrigger>
                       <SelectValue placeholder="Select ratio" />
                     </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="9:16">9:16 (TikTok)</SelectItem>
-                      <SelectItem value="16:9">16:9 (YouTube)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label>Duration</Label>
-                  <Select value={duration} onValueChange={setDuration}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select duration" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="5">5 Seconds</SelectItem>
-                      <SelectItem value="10">10 Seconds</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label>Model</Label>
-                <Select value={selectedModel} onValueChange={setSelectedModel}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select model" />
-                  </SelectTrigger>
                   <SelectContent>
-                    {videoModels.map(model => (
-                      <SelectItem key={model.id} value={model.id}>
-                        {model.name}
-                      </SelectItem>
-                    ))}
-                    <SelectItem value="custom">Custom...</SelectItem>
+                    <SelectItem value="9:16">9:16 (Portrait)</SelectItem>
+                    <SelectItem value="16:9">16:9 (Landscape)</SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Duration</Label>
+                <Select value={duration} onValueChange={setDuration}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select duration" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="5">5s (Veo/Luma)</SelectItem>
+                    <SelectItem value="10">10s (Veo/Sora)</SelectItem>
+                    <SelectItem value="15">15s (Sora)</SelectItem>
+                    <SelectItem value="25">25s (Sora Pro)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Model</Label>
+              <Select value={selectedModel} onValueChange={setSelectedModel}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select model" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="sora-2">Sora 2</SelectItem>
+                  <SelectItem value="sora-2-pro">Sora 2 Pro</SelectItem>
+                  <SelectItem value="luma-video">Luma Dream Machine</SelectItem>
+                  <SelectItem value="runway-gen3">Runway Gen-3</SelectItem>
+                  <SelectItem value="veo3-fast">Google Veo 3 Fast</SelectItem>
+                  <SelectItem value="kling-video">Kling AI</SelectItem>
+                  <SelectItem value="custom">Custom...</SelectItem>
+                </SelectContent>
+              </Select>
                 {selectedModel === 'custom' && (
                   <input 
                     className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm mt-2"
@@ -475,6 +556,32 @@ export default function VideoPage() {
                     onChange={(e) => setCustomModel(e.target.value)}
                   />
                 )}
+              </div>
+
+              {/* Advanced Options */}
+              <div className="pt-2 border-t">
+                <Collapsible>
+                  <CollapsibleTrigger className="flex items-center text-sm text-muted-foreground hover:text-foreground">
+                    <ChevronDown className="w-4 h-4 mr-1" />
+                    Advanced Options
+                  </CollapsibleTrigger>
+                  <CollapsibleContent className="space-y-4 pt-4">
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-0.5">
+                        <Label className="text-base">Enhance Prompt</Label>
+                        <p className="text-xs text-muted-foreground">Optimize prompt for better results</p>
+                      </div>
+                      <Switch checked={enhancePrompt} onCheckedChange={setEnhancePrompt} />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-0.5">
+                        <Label className="text-base">Upsample (HD)</Label>
+                        <p className="text-xs text-muted-foreground">Enable high definition output</p>
+                      </div>
+                      <Switch checked={enableUpsample} onCheckedChange={setEnableUpsample} />
+                    </div>
+                  </CollapsibleContent>
+                </Collapsible>
               </div>
             </div>
 
@@ -495,162 +602,171 @@ export default function VideoPage() {
           </div>
         </div>
         
-        {/* Right Column: History List */}
-        <div className="lg:col-span-2 space-y-4">
-          <h3 className="text-lg font-medium">Generation History</h3>
+        {/* Bottom: History List */}
+        <Collapsible open={isHistoryOpen} onOpenChange={setIsHistoryOpen} className="w-full max-w-4xl mx-auto space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-medium">Generation History</h3>
+            <CollapsibleTrigger asChild>
+              <Button variant="ghost" size="sm">
+                {isHistoryOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+              </Button>
+            </CollapsibleTrigger>
+          </div>
           
-          {tasks.length === 0 ? (
-            <div className="text-center py-12 border-2 border-dashed rounded-lg text-muted-foreground">
-              No videos generated yet. Start by creating one!
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {tasks.map(task => {
-                const isActive = isTaskActive(task.status)
-                const isCompleted = !isActive && !['failed', 'error', 'video_generation_failed'].includes(task.status.toLowerCase())
-                const isFailed = !isActive && !isCompleted
+          <CollapsibleContent>
+            {tasks.length === 0 ? (
+              <div className="text-center py-12 border-2 border-dashed rounded-lg text-muted-foreground">
+                No videos generated yet. Start by creating one!
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {tasks.map(task => {
+                  const isActive = isTaskActive(task.status)
+                  const isCompleted = !isActive && !['failed', 'error', 'video_generation_failed'].includes(task.status.toLowerCase())
+                  const isFailed = !isActive && !isCompleted
 
-                return (
-                  <div key={task.id} className="flex flex-col gap-4 p-4 rounded-lg border bg-card shadow-sm relative overflow-hidden">
-                    {/* Status Indicator Line */}
-                    <div className={cn(
-                      "absolute left-0 top-0 bottom-0 w-1",
-                      isCompleted ? "bg-green-500" :
-                      isFailed ? "bg-red-500" :
-                      "bg-orange-500 animate-pulse"
-                    )} />
+                  return (
+                    <div key={task.id} className="flex flex-col gap-4 p-4 rounded-lg border bg-card shadow-sm relative overflow-hidden">
+                      {/* Status Indicator Line */}
+                      <div className={cn(
+                        "absolute left-0 top-0 bottom-0 w-1",
+                        isCompleted ? "bg-green-500" :
+                        isFailed ? "bg-red-500" :
+                        "bg-orange-500 animate-pulse"
+                      )} />
 
-                    <div className="flex flex-col sm:flex-row gap-4">
-                      {/* Video Preview or Placeholder */}
-                      <div className="w-full sm:w-48 h-48 bg-black rounded-md flex-shrink-0 overflow-hidden flex items-center justify-center relative group">
-                        {isCompleted && task.videoUrl ? (
-                          <video 
-                            src={task.videoUrl} 
-                            controls 
-                            className="w-full h-full object-contain"
-                          />
-                        ) : isFailed ? (
-                          <XCircle className="w-8 h-8 text-red-400" />
-                        ) : (
-                          <Loader2 className="w-8 h-8 text-orange-500 animate-spin" />
-                        )}
-                        
-                        {/* Reference Images Indicator */}
-                        {task.images && task.images.length > 0 && (
-                          <div className="absolute top-1 right-1 bg-black/50 text-white text-[10px] px-1.5 py-0.5 rounded flex items-center gap-1">
-                            <ImageIcon className="w-3 h-3" />
-                            {task.images.length}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Content */}
-                      <div className="flex-1 min-w-0 space-y-2">
-                        <div className="flex justify-between items-start">
-                          <p className="font-medium truncate pr-8">{task.prompt}</p>
-                          <Button 
-                            variant="ghost" 
-                            size="icon" 
-                            className="h-6 w-6 text-muted-foreground hover:text-destructive"
-                            onClick={() => handleDelete(task.id)}
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </Button>
-                        </div>
-                        
-                        <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
-                          <span className="px-2 py-0.5 rounded-full bg-secondary">
-                            {task.model}
-                          </span>
-                          <span className="px-2 py-0.5 rounded-full bg-secondary">
-                            {task.aspectRatio}
-                          </span>
-                          {task.duration && (
-                            <span className="px-2 py-0.5 rounded-full bg-secondary">
-                              {task.duration}s
-                            </span>
+                      <div className="flex flex-col sm:flex-row gap-4">
+                        {/* Video Preview or Placeholder */}
+                        <div className="w-full sm:w-48 h-48 bg-black rounded-md flex-shrink-0 overflow-hidden flex items-center justify-center relative group">
+                          {isCompleted && task.videoUrl ? (
+                            <video 
+                              src={task.videoUrl} 
+                              controls 
+                              className="w-full h-full object-contain"
+                            />
+                          ) : isFailed ? (
+                            <XCircle className="w-8 h-8 text-red-400" />
+                          ) : (
+                            <Loader2 className="w-8 h-8 text-orange-500 animate-spin" />
                           )}
-                          <span className="flex items-center gap-1 ml-auto sm:ml-0">
-                            <Clock className="w-3 h-3" />
-                            {getDuration(task)}
-                          </span>
-                        </div>
-
-                        {/* Status & Progress */}
-                        <div className="space-y-1 pt-2">
-                          <div className="flex justify-between text-xs">
-                            <span className={cn(
-                              "font-medium uppercase text-[10px] tracking-wider",
-                              isCompleted ? "text-green-600" :
-                              isFailed ? "text-red-600" :
-                              "text-orange-600"
-                            )}>
-                              {task.status}
-                            </span>
-                            <span>{Math.round(task.progress)}%</span>
-                          </div>
-                          <Progress value={task.progress} className="h-1.5" />
-                          {task.error && (
-                            <div className="mt-3 p-3 bg-red-50 border border-red-100 rounded-md">
-                              <div className="flex items-start gap-2">
-                                <AlertCircle className="w-4 h-4 text-red-600 mt-0.5 flex-shrink-0" />
-                                <span className="text-xs text-red-700 font-medium leading-5">
-                                  {getFriendlyErrorMessage(task.error)}
-                                </span>
-                              </div>
-                              
-                              {/* Error Details Collapsible */}
-                              <Collapsible 
-                                open={expandedErrors[task.id]} 
-                                onOpenChange={(open) => setExpandedErrors(prev => ({ ...prev, [task.id]: open }))}
-                                className="mt-2"
-                              >
-                                <CollapsibleTrigger asChild>
-                                  <Button variant="ghost" size="sm" className="h-5 px-0 text-[10px] text-muted-foreground hover:text-foreground">
-                                    {expandedErrors[task.id] ? <ChevronUp className="w-3 h-3 mr-1" /> : <ChevronDown className="w-3 h-3 mr-1" />}
-                                    {expandedErrors[task.id] ? "Hide Details" : "Show Error Details"}
-                                  </Button>
-                                </CollapsibleTrigger>
-                                <CollapsibleContent>
-                                  <div className="p-2 bg-white rounded text-[10px] font-mono text-red-700 overflow-x-auto mt-1 border border-red-100">
-                                    <pre>{JSON.stringify(task.lastResponse, null, 2)}</pre>
-                                  </div>
-                                </CollapsibleContent>
-                              </Collapsible>
+                          
+                          {/* Reference Images Indicator */}
+                          {task.images && task.images.length > 0 && (
+                            <div className="absolute top-1 right-1 bg-black/50 text-white text-[10px] px-1.5 py-0.5 rounded flex items-center gap-1">
+                              <ImageIcon className="w-3 h-3" />
+                              {task.images.length}
                             </div>
                           )}
                         </div>
-                        
-                        {/* Actions */}
-                        {isCompleted && task.videoUrl && (
-                          <div className="pt-1">
-                            <Button variant="link" size="sm" className="h-auto p-0 text-orange-600" asChild>
-                              <a href={task.videoUrl} download target="_blank" rel="noopener noreferrer">
-                                <Download className="w-3 h-3 mr-1" />
-                                Download
-                              </a>
+
+                        {/* Content */}
+                        <div className="flex-1 min-w-0 space-y-2">
+                          <div className="flex justify-between items-start">
+                            <p className="font-medium truncate pr-8">{task.prompt}</p>
+                            <Button 
+                              variant="ghost" 
+                              size="icon" 
+                              className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                              onClick={() => handleDelete(task.id)}
+                            >
+                              <Trash2 className="w-4 h-4" />
                             </Button>
                           </div>
-                        )}
-                      </div>
-                    </div>
+                          
+                          <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
+                            <span className="px-2 py-0.5 rounded-full bg-secondary">
+                              {task.model}
+                            </span>
+                            <span className="px-2 py-0.5 rounded-full bg-secondary">
+                              {task.aspectRatio}
+                            </span>
+                            {task.duration && (
+                              <span className="px-2 py-0.5 rounded-full bg-secondary">
+                                {task.duration}s
+                              </span>
+                            )}
+                            <span className="flex items-center gap-1 ml-auto sm:ml-0">
+                              <Clock className="w-3 h-3" />
+                              {getDuration(task)}
+                            </span>
+                          </div>
 
-                    {/* Debug Info */}
-                    {showDebug && task.lastResponse && (
-                      <div className="mt-2 p-2 bg-muted/50 rounded text-[10px] font-mono overflow-x-auto border border-dashed">
-                        <div className="flex items-center gap-2 mb-1 text-muted-foreground">
-                          <Terminal className="w-3 h-3" />
-                          <span>Raw API Response</span>
+                          {/* Status & Progress */}
+                          <div className="space-y-1 pt-2">
+                            <div className="flex justify-between text-xs">
+                              <span className={cn(
+                                "font-medium uppercase text-[10px] tracking-wider",
+                                isCompleted ? "text-green-600" :
+                                isFailed ? "text-red-600" :
+                                "text-orange-600"
+                              )}>
+                                {task.status}
+                              </span>
+                              <span>{Math.round(task.progress)}%</span>
+                            </div>
+                            <Progress value={task.progress} className="h-1.5" />
+                            {task.error && (
+                              <div className="mt-3 p-3 bg-red-50 border border-red-100 rounded-md">
+                                <div className="flex items-start gap-2">
+                                  <AlertCircle className="w-4 h-4 text-red-600 mt-0.5 flex-shrink-0" />
+                                  <span className="text-xs text-red-700 font-medium leading-5">
+                                    {getFriendlyErrorMessage(task.error)}
+                                  </span>
+                                </div>
+                                
+                                {/* Error Details Collapsible */}
+                                <Collapsible 
+                                  open={expandedErrors[task.id]} 
+                                  onOpenChange={(open) => setExpandedErrors(prev => ({ ...prev, [task.id]: open }))}
+                                  className="mt-2"
+                                >
+                                  <CollapsibleTrigger asChild>
+                                    <Button variant="ghost" size="sm" className="h-5 px-0 text-[10px] text-muted-foreground hover:text-foreground">
+                                      {expandedErrors[task.id] ? <ChevronUp className="w-3 h-3 mr-1" /> : <ChevronDown className="w-3 h-3 mr-1" />}
+                                      {expandedErrors[task.id] ? "Hide Details" : "Show Error Details"}
+                                    </Button>
+                                  </CollapsibleTrigger>
+                                  <CollapsibleContent>
+                                    <div className="p-2 bg-white rounded text-[10px] font-mono text-red-700 overflow-x-auto mt-1 border border-red-100">
+                                      <pre>{JSON.stringify(task.lastResponse, null, 2)}</pre>
+                                    </div>
+                                  </CollapsibleContent>
+                                </Collapsible>
+                              </div>
+                            )}
+                          </div>
+                          
+                          {/* Actions */}
+                          {isCompleted && task.videoUrl && (
+                            <div className="pt-1">
+                              <Button variant="link" size="sm" className="h-auto p-0 text-orange-600" asChild>
+                                <a href={task.videoUrl} download target="_blank" rel="noopener noreferrer">
+                                  <Download className="w-3 h-3 mr-1" />
+                                  Download
+                                </a>
+                              </Button>
+                            </div>
+                          )}
                         </div>
-                        <pre>{JSON.stringify(task.lastResponse, null, 2)}</pre>
                       </div>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </div>
+
+                      {/* Debug Info */}
+                      {showDebug && task.lastResponse && (
+                        <div className="mt-2 p-2 bg-muted/50 rounded text-[10px] font-mono overflow-x-auto border border-dashed">
+                          <div className="flex items-center gap-2 mb-1 text-muted-foreground">
+                            <Terminal className="w-3 h-3" />
+                            <span>Raw API Response</span>
+                          </div>
+                          <pre>{JSON.stringify(task.lastResponse, null, 2)}</pre>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </CollapsibleContent>
+        </Collapsible>
       </div>
     </div>
   )

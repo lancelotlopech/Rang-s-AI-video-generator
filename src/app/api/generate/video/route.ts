@@ -24,7 +24,7 @@ function getEndpoints() {
 export async function POST(req: Request) {
   try {
     const body = await req.json()
-    const { prompt, aspectRatio, model, images, duration } = body
+    const { prompt, aspectRatio, model, images, duration, enhance_prompt, enable_upsample } = body
     const { apiKey, createEndpoint } = getEndpoints()
 
     if (!apiKey) {
@@ -36,24 +36,63 @@ export async function POST(req: Request) {
 
     console.log(`[Video API] Creating task: ${model}`)
 
-    // Construct payload strictly according to Yunwu API
-    const payload: any = {
-      model: model || 'veo3-fast',
-      prompt: prompt,
-      enhance_prompt: true, // Default to true as per doc recommendation
-      enable_upsample: true, // Default to true
-    }
+    let payload: any = {}
 
-    // Add optional fields
-    if (aspectRatio) payload.aspect_ratio = aspectRatio
-    if (duration) payload.duration = duration
-    if (images && Array.isArray(images) && images.length > 0) {
-      // Filter out empty strings
-      const validImages = images.filter((img: string) => img && img.trim().length > 0)
-      if (validImages.length > 0) {
-        payload.images = validImages
+    // Handle Sora Models
+    if (model && model.startsWith('sora')) {
+      payload = {
+        model: model,
+        prompt: prompt,
+        // Map aspectRatio to orientation
+        orientation: aspectRatio === '16:9' ? 'landscape' : 'portrait',
+        // Default to large (1080p)
+        size: 'large',
+        // Default to no watermark
+        watermark: false,
+        // Duration
+        duration: duration ? parseInt(String(duration), 10) : 10,
+        // Images
+        images: []
+      }
+
+      if (images && Array.isArray(images) && images.length > 0) {
+        const validImages = images.filter((img: string) => img && img.trim().length > 0)
+        if (validImages.length > 0) {
+          payload.images = validImages // Sora supports multiple images
+        }
+      }
+    } 
+    // Handle Veo/Other Models
+    else {
+      payload = {
+        model: model || 'veo3-fast',
+        prompt: prompt,
+        enhance_prompt: enhance_prompt !== undefined ? enhance_prompt : true,
+        enable_upsample: enable_upsample !== undefined ? enable_upsample : true,
+      }
+
+      // Add optional fields
+      if (aspectRatio) payload.aspect_ratio = aspectRatio
+      if (duration) payload.duration = parseInt(String(duration), 10)
+      if (images && Array.isArray(images) && images.length > 0) {
+        // Filter out empty strings
+        const validImages = images.filter((img: string) => img && img.trim().length > 0)
+        if (validImages.length > 0) {
+          // Revert: API expects []string according to docs
+          // We take only the first image to be safe, as Veo typically supports single ref image
+          payload.images = [validImages[0]]
+        }
       }
     }
+
+    // Debug payload structure (without full base64)
+    const debugPayload = { ...payload }
+    if (debugPayload.images) {
+      debugPayload.images = debugPayload.images.map((img: string) => 
+        img.startsWith('data:') ? `${img.substring(0, 30)}...[base64]` : img
+      )
+    }
+    console.log('[Video API] Payload:', JSON.stringify(debugPayload, null, 2))
 
     const response = await fetch(createEndpoint!, {
       method: 'POST',
