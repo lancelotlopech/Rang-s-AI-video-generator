@@ -17,6 +17,7 @@ import {
   Menu,
   Image as ImageIcon,
   MessageSquare,
+  FileText,
   PanelLeftClose,
   PanelLeftOpen,
   Sun,

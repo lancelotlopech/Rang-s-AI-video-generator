@@ -38,6 +38,7 @@ const EXPORT_SIZES = [
 export default function ScreenshotPage() {
   const { t } = useLanguage()
   const [prompt, setPrompt] = useState("")
+  const [aspectRatio, setAspectRatio] = useState("9:16") // New: Aspect Ratio
   // 生成的主图 (默认为 1290x2796)
   const [generatedImage, setGeneratedImage] = useState<string | null>(null)
   
@@ -83,11 +84,16 @@ export default function ScreenshotPage() {
       setGenerationStep('generating')
       setGeneratedImage(null)
 
-      // 1. 生成初始图 (1024x1792)
+      // 1. 生成初始图
+      // Map aspect ratio to size
+      let size = "1024x1792"
+      if (aspectRatio === "16:9") size = "1792x1024"
+      if (aspectRatio === "1:1") size = "1024x1024"
+
       const response = await fetch("/api/generate/image", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, model: selectedModelId }),
+        body: JSON.stringify({ prompt, model: selectedModelId, size }),
       })
 
       if (!response.ok) {
@@ -236,20 +242,35 @@ export default function ScreenshotPage() {
               </div>
 
               {models.length > 0 && (
-                <div className="space-y-2">
-                  <Label>{t("screenshot.generator.model_label")}</Label>
-                  <Select value={selectedModelId} onValueChange={setSelectedModelId} disabled={isLoading}>
-                    <SelectTrigger>
-                      <SelectValue placeholder={t("screenshot.generator.select_model")} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {models.map((model) => (
-                        <SelectItem key={model.id} value={model.id}>
-                          {model.name} ({model.credits} Credits)
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>{t("screenshot.generator.model_label")}</Label>
+                    <Select value={selectedModelId} onValueChange={setSelectedModelId} disabled={isLoading}>
+                      <SelectTrigger>
+                        <SelectValue placeholder={t("screenshot.generator.select_model")} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {models.map((model) => (
+                          <SelectItem key={model.id} value={model.id}>
+                            {model.name} ({model.credits} Credits)
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Aspect Ratio</Label>
+                    <Select value={aspectRatio} onValueChange={setAspectRatio} disabled={isLoading}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select ratio" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="9:16">9:16 (Portrait)</SelectItem>
+                        <SelectItem value="16:9">16:9 (Landscape)</SelectItem>
+                        <SelectItem value="1:1">1:1 (Square)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
               )}
 
