@@ -191,10 +191,32 @@ export default function VideoPage() {
 
   // Helper to check if task is active
   const isTaskActive = (status: string) => {
-    const completedStatuses = ['completed', 'video_generation_completed', 'video_upsampling_completed', 'succeeded', 'success']
+    const completedStatuses = ['completed', 'video_generation_completed', 'video_upsampling_completed', 'succeeded', 'success', 'expired']
     const failedStatuses = ['failed', 'error', 'video_generation_failed', 'video_upsampling_failed']
     return !completedStatuses.includes(status.toLowerCase()) && !failedStatuses.includes(status.toLowerCase())
   }
+
+  // Check for expired tasks
+  useEffect(() => {
+    const checkExpiration = () => {
+      const now = Date.now()
+      const ONE_DAY = 24 * 60 * 60 * 1000
+      
+      setTasks(prev => prev.map(task => {
+        if (task.status === 'expired') return task
+        
+        // If task is completed and older than 24h, mark as expired
+        if (task.finishedAt && (now - task.finishedAt > ONE_DAY)) {
+          return { ...task, status: 'expired', videoUrl: undefined }
+        }
+        return task
+      }))
+    }
+    
+    checkExpiration()
+    const interval = setInterval(checkExpiration, 60 * 1000) // Check every minute
+    return () => clearInterval(interval)
+  }, [])
 
   // Polling Logic
   useEffect(() => {
@@ -523,8 +545,19 @@ export default function VideoPage() {
               <span className="text-sm font-medium">{credits !== null ? credits : '...'}</span>
               <span className="text-xs text-muted-foreground">credits</span>
             </div>
-
           </div>
+        </div>
+
+        {/* Disclaimer Banner */}
+        <div className="max-w-5xl mx-auto w-full px-1">
+          <Alert className="bg-blue-50/50 border-blue-200 text-blue-800 py-2">
+            <Info className="h-4 w-4 text-blue-600" />
+            <AlertDescription className="text-xs flex items-center justify-between w-full">
+              <span>
+                <strong>Note:</strong> History is saved locally on this device only. Video links expire in <strong>24 hours</strong>. Please download your creations immediately.
+              </span>
+            </AlertDescription>
+          </Alert>
         </div>
 
         <div className="max-w-5xl mx-auto w-full space-y-6">
@@ -608,7 +641,10 @@ export default function VideoPage() {
 
             {/* Image Upload Trigger */}
             <div className="space-y-1.5">
-              <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t.form.ref_images_label}</Label>
+              <div className="flex items-center justify-between">
+                <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t.form.ref_images_label}</Label>
+                <span className="text-[10px] text-muted-foreground/70">Temp storage only</span>
+              </div>
               <div className="flex items-center gap-3">
                 <div className="flex gap-2">
                   {uploadedImages.map((img, index) => (
@@ -706,8 +742,9 @@ export default function VideoPage() {
           <div className="flex flex-wrap gap-4 pb-20">
             {tasks.map(task => {
               const isActive = isTaskActive(task.status)
-              const isCompleted = !isActive && !['failed', 'error', 'video_generation_failed'].includes(task.status.toLowerCase())
-              const isFailed = !isActive && !isCompleted
+              const isExpired = task.status === 'expired'
+              const isCompleted = !isActive && !isExpired && !['failed', 'error', 'video_generation_failed'].includes(task.status.toLowerCase())
+              const isFailed = !isActive && !isCompleted && !isExpired
 
               return (
                 <Card 
@@ -728,6 +765,11 @@ export default function VideoPage() {
                       }}
                       poster={task.images?.[0]}
                     />
+                  ) : isExpired ? (
+                    <div className="w-full h-full flex flex-col items-center justify-center bg-muted text-muted-foreground p-4 text-center">
+                      <Clock className="w-8 h-8 mb-2 opacity-50" />
+                      <span className="text-xs font-medium">Link Expired</span>
+                    </div>
                   ) : isFailed ? (
                     <div className="w-full h-full flex items-center justify-center bg-muted">
                       <XCircle className="w-8 h-8 text-red-400" />
@@ -744,10 +786,15 @@ export default function VideoPage() {
                   )}
 
                   {/* Status Badge */}
-                  <div className="absolute top-2 left-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <Badge variant={isCompleted ? "default" : isFailed ? "destructive" : "secondary"} className="shadow-sm backdrop-blur-md bg-opacity-80 text-[10px] h-5 px-1.5">
+                  <div className="absolute top-2 left-2 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col gap-1 items-start">
+                    <Badge variant={isCompleted ? "default" : isFailed || isExpired ? "destructive" : "secondary"} className="shadow-sm backdrop-blur-md bg-opacity-80 text-[10px] h-5 px-1.5">
                       {task.status}
                     </Badge>
+                    {isCompleted && (
+                      <Badge variant="outline" className="bg-yellow-500/10 text-yellow-600 border-yellow-500/20 text-[9px] h-4 px-1">
+                        Exp in 24h
+                      </Badge>
+                    )}
                   </div>
 
                   {/* Duration Badge */}
@@ -855,18 +902,26 @@ export default function VideoPage() {
                 </ScrollArea>
 
                 <div className="pt-4 border-t space-y-2">
-                  {previewTask.videoUrl && (
-                    <div className="grid grid-cols-2 gap-2">
-                      <Button variant="outline" className="w-full" asChild>
-                        <a href={previewTask.videoUrl} download target="_blank" rel="noopener noreferrer">
-                          <Download className="w-4 h-4 mr-2" />
-                          Download
-                        </a>
-                      </Button>
-                      <Button className="w-full" onClick={() => handleExtend(previewTask)}>
-                        <RefreshCw className="w-4 h-4 mr-2" />
-                        Extend
-                      </Button>
+                  {previewTask.videoUrl && previewTask.status !== 'expired' && (
+                    <div className="space-y-2">
+                      <Alert className="bg-yellow-50 border-yellow-200 py-2">
+                        <AlertTriangle className="h-3 w-3 text-yellow-600" />
+                        <AlertDescription className="text-[10px] text-yellow-800">
+                          Link expires in 24h. Download now to save permanently.
+                        </AlertDescription>
+                      </Alert>
+                      <div className="grid grid-cols-2 gap-2">
+                        <Button className="w-full bg-green-600 hover:bg-green-700 text-white" asChild>
+                          <a href={previewTask.videoUrl} download target="_blank" rel="noopener noreferrer">
+                            <Download className="w-4 h-4 mr-2" />
+                            Download
+                          </a>
+                        </Button>
+                        <Button variant="outline" className="w-full" onClick={() => handleExtend(previewTask)}>
+                          <RefreshCw className="w-4 h-4 mr-2" />
+                          Extend
+                        </Button>
+                      </div>
                     </div>
                   )}
                   <Button 
@@ -875,7 +930,7 @@ export default function VideoPage() {
                     onClick={() => handleDelete(previewTask.id)}
                   >
                     <Trash2 className="w-4 h-4 mr-2" />
-                    Delete Video
+                    Delete Record
                   </Button>
                 </div>
               </div>
