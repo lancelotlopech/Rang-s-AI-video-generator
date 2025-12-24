@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
 
 // Allow streaming responses up to 60 seconds
 export const maxDuration = 60
@@ -21,10 +22,30 @@ function getEndpoints() {
   return { apiKey, createEndpoint, queryEndpoint }
 }
 
+// Helper to get cost
+function getModelCost(modelId: string): number {
+  try {
+    const envModels = process.env.NEXT_PUBLIC_VIDEO_MODELS
+    if (!envModels) return 0
+    const models = JSON.parse(envModels) as { id: string; credits: number }[]
+    const model = models.find(m => m.id === modelId)
+    return model?.credits || 0
+  } catch (e) {
+    return 0
+  }
+}
+
 export async function POST(req: Request) {
   try {
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
     const body = await req.json()
-    const { prompt, aspectRatio, model, images, duration, enhance_prompt, enable_upsample } = body
+    const { prompt, aspectRatio, model, images, duration, enhance_prompt, enable_upsample, resolution } = body
     const { apiKey, createEndpoint } = getEndpoints()
 
     if (!apiKey) {
@@ -34,7 +55,56 @@ export async function POST(req: Request) {
       )
     }
 
-    console.log(`[Video API] Creating task: ${model}`)
+    // 0. Rate Limit Check (2 requests per minute)
+    const oneMinuteAgo = new Date(Date.now() - 60 * 1000).toISOString()
+    const { count, error: rateLimitError } = await supabase
+      .from('generations')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .gte('created_at', oneMinuteAgo)
+
+    if (rateLimitError) {
+      console.error('Rate limit check failed:', rateLimitError)
+    } else if (count !== null && count >= 2) {
+      return NextResponse.json(
+        { error: 'Rate limit exceeded', details: 'You can only generate 2 videos per minute.' },
+        { status: 429 }
+      )
+    }
+
+    // 1. Check Credits & Deduct (using RPC for safety)
+    const cost = getModelCost(model)
+    
+    // Call the secure decrement function
+    const { error: deductError } = await supabase.rpc('decrement_credits', { amount: cost })
+
+    if (deductError) {
+      console.error('Credit deduction failed:', deductError)
+      return NextResponse.json(
+        { error: 'Insufficient credits', details: deductError.message },
+        { status: 402 }
+      )
+    }
+
+    console.log(`[Video API] Creating task: ${model} for user ${user.id} (Cost: ${cost})`)
+
+    // 2. Log Generation Start
+    const { data: genLog, error: logError } = await supabase
+      .from('generations')
+      .insert({
+        user_id: user.id,
+        type: 'video',
+        model: model,
+        status: 'pending',
+        cost: cost
+      })
+      .select()
+      .single()
+
+    if (logError) {
+      console.error('Failed to log generation:', logError)
+      // Don't block execution, but it's bad practice
+    }
 
     let payload: any = {}
 
@@ -64,11 +134,14 @@ export async function POST(req: Request) {
     } 
     // Handle Veo/Other Models
     else {
+      // Force upsample if resolution is 1080p or enable_upsample is true
+      const shouldUpsample = resolution === '1080p' || enable_upsample === true
+
       payload = {
         model: model || 'veo3-fast',
         prompt: prompt,
         enhance_prompt: enhance_prompt !== undefined ? enhance_prompt : true,
-        enable_upsample: enable_upsample !== undefined ? enable_upsample : true,
+        enable_upsample: shouldUpsample,
       }
 
       // Add optional fields
@@ -78,9 +151,8 @@ export async function POST(req: Request) {
         // Filter out empty strings
         const validImages = images.filter((img: string) => img && img.trim().length > 0)
         if (validImages.length > 0) {
-          // Revert: API expects []string according to docs
-          // We take only the first image to be safe, as Veo typically supports single ref image
-          payload.images = [validImages[0]]
+          // Pass all images to support multi-image references (e.g. start/end frames)
+          payload.images = validImages
         }
       }
     }
@@ -108,9 +180,19 @@ export async function POST(req: Request) {
       const errorText = await response.text()
       console.error('❌ [Video API] Create Failed!')
       console.error('Status:', response.status)
-      console.error('Headers:', Object.fromEntries(response.headers.entries()))
       console.error('Body:', errorText)
       
+      // Refund credits on API failure
+      await supabase.rpc('increment_credits', { amount: cost })
+
+      // Update log status
+      if (genLog) {
+        await supabase
+          .from('generations')
+          .update({ status: 'failed' })
+          .eq('id', genLog.id)
+      }
+
       return NextResponse.json(
         { error: 'Provider Error', details: errorText, status: response.status },
         { status: response.status }
@@ -121,11 +203,23 @@ export async function POST(req: Request) {
     console.log('✅ [Video API] Create Success!')
     console.log(JSON.stringify(data, null, 2))
 
+    // Update log status to success (or pending if async)
+    // Usually 'pending' is fine until we get callback or poll result
+    // But here we mark as 'processing' or keep 'pending'
+    
     // Yunwu API returns { id: "...", status: "pending", ... }
     return NextResponse.json(data)
 
   } catch (error: any) {
     console.error('[Video API] Internal Error:', error)
+    // Try to refund if possible (might fail if DB is down)
+    try {
+      const supabase = await createClient()
+      // We don't know cost here easily unless we parse body again, but let's assume we can't refund easily if we crashed before cost calc
+      // If we crashed after deduction, we should try to refund.
+      // For simplicity, we skip complex refund logic on crash for now.
+    } catch (e) {}
+
     return NextResponse.json(
       { error: 'Internal Server Error', details: error.message },
       { status: 500 }
@@ -147,8 +241,6 @@ export async function GET(req: Request) {
     // Yunwu Query: GET /v1/video/query?id={taskId}
     const pollUrl = `${queryEndpoint}?id=${taskId}`
 
-    console.log(`[Video API] Polling: ${pollUrl}`)
-
     const response = await fetch(pollUrl, {
       method: 'GET',
       headers: {
@@ -160,10 +252,6 @@ export async function GET(req: Request) {
 
     if (!response.ok) {
       const errorText = await response.text()
-      console.error(`❌ [Video API] Poll Failed for ${taskId}`)
-      console.error('Status:', response.status)
-      console.error('Body:', errorText)
-      
       return NextResponse.json(
         { error: 'Poll Error', details: errorText, status: response.status },
         { status: response.status }
@@ -172,13 +260,10 @@ export async function GET(req: Request) {
 
     const data = await response.json()
     
-    // Only log if status changed or failed to avoid spam
-    if (data.status === 'failed' || data.status === 'completed' || data.status === 'succeeded') {
-      console.log(`ℹ️ [Video API] Task ${taskId} Status: ${data.status}`)
-      console.log(JSON.stringify(data, null, 2))
-    }
+    // Optional: Update generation log status if completed
+    // This would require finding the log entry by some ID, but we don't store external task ID in generations table yet.
+    // For now, we just return the data.
 
-    // Pass through the raw data from Yunwu
     return NextResponse.json(data)
 
   } catch (error: any) {

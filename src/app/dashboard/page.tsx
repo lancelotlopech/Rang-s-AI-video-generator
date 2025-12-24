@@ -5,22 +5,22 @@ import { cn } from "@/lib/utils"
 
 export default function DashboardPage() {
   const tools = [
-    {
-      label: "Screenshot Studio",
-      icon: Smartphone,
-      href: "/dashboard/screenshot",
-      color: "text-violet-500",
-      bgColor: "bg-violet-500/10",
-      description: "Generate stunning App Store screenshots from prompts.",
-    },
-    {
-      label: "Icon & Illustration",
-      icon: Palette,
-      href: "/dashboard/icon",
-      color: "text-pink-700",
-      bgColor: "bg-pink-700/10",
-      description: "Create unique icons and illustrations with AI.",
-    },
+    // {
+    //   label: "Screenshot Studio",
+    //   icon: Smartphone,
+    //   href: "/dashboard/screenshot",
+    //   color: "text-violet-500",
+    //   bgColor: "bg-violet-500/10",
+    //   description: "Generate stunning App Store screenshots from prompts.",
+    // },
+    // {
+    //   label: "Icon & Illustration",
+    //   icon: Palette,
+    //   href: "/dashboard/icon",
+    //   color: "text-pink-700",
+    //   bgColor: "bg-pink-700/10",
+    //   description: "Create unique icons and illustrations with AI.",
+    // },
     {
       label: "Ad Video Generator",
       icon: Video,

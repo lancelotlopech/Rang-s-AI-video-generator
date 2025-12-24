@@ -20,7 +20,7 @@ const getOpenAIClient = () => {
 
 export async function POST(req: Request) {
   try {
-    const { messages } = await req.json()
+    const { messages, model: requestedModel } = await req.json()
 
     if (!messages) {
       return new NextResponse("Messages are required", { status: 400 })
@@ -37,7 +37,8 @@ export async function POST(req: Request) {
       })
     }
 
-    const model = process.env.OPENAI_MODEL || "gpt-3.5-turbo"
+    // Use requested model or fallback to env/default
+    const model = requestedModel || process.env.OPENAI_MODEL || "gpt-3.5-turbo"
 
     const response = await openai.chat.completions.create({
       model: model,

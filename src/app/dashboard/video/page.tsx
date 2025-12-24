@@ -12,7 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Video, Loader2, Download, Play, AlertCircle, Clock, CheckCircle2, XCircle, Trash2, Image as ImageIcon, Terminal, ChevronDown, ChevronUp, UploadCloud } from "lucide-react"
+import { Video, Loader2, Download, Play, AlertCircle, Clock, CheckCircle2, XCircle, Trash2, Image as ImageIcon, Terminal, ChevronDown, ChevronUp, UploadCloud, Sparkles, LayoutGrid, List as ListIcon, RefreshCw, Maximize2, Info, Eye, AlertTriangle, Coins } from "lucide-react"
 import { toast } from "sonner"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Progress } from "@/components/ui/progress"
@@ -20,6 +20,16 @@ import { cn } from "@/lib/utils"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Switch } from "@/components/ui/switch"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
+import { useLanguage } from "@/components/language-provider"
+import { translations } from "@/lib/i18n"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Separator } from "@/components/ui/separator"
+import { createClient } from "@/lib/supabase/client"
+import { useRouter } from "next/navigation"
 
 interface VideoTask {
   id: string // Local UUID
@@ -42,6 +52,7 @@ const getFriendlyErrorMessage = (error?: string) => {
   if (!error) return "Unknown error"
   
   // 1. Known Error Codes
+  if (error.includes("get_channel_failed")) return "Service busy: Upstream channels are saturated. Please try switching models (e.g. Luma/Runway) or try again later."
   if (error.includes("INVALID_ARGUMENT")) return "Request rejected. Likely due to content safety policy or invalid parameters."
   if (error.includes("NSFW") || error.includes("safety")) return "Content blocked by safety filters."
   if (error.includes("AUDIO_FILTERED")) return "Audio content filtered by safety policy."
@@ -62,21 +73,30 @@ const getFriendlyErrorMessage = (error?: string) => {
 }
 
 export default function VideoPage() {
-  // Form State
+  const { language } = useLanguage()
+  const t = translations[language].video
+  const router = useRouter()
+  const supabase = createClient()
+
+  // State
   const [prompt, setPrompt] = useState("")
-  const [aspectRatio, setAspectRatio] = useState("9:16")
-  const [duration, setDuration] = useState("5")
-  const [selectedModel, setSelectedModel] = useState("")
+  const [aspectRatio, setAspectRatio] = useState("9:16") // Default to portrait
+  const [duration, setDuration] = useState("10") // Default 10s
+  const [resolution, setResolution] = useState("1080p") // Default 1080p
+  const [selectedModel, setSelectedModel] = useState("sora-2") // Default Sora 2
   const [customModel, setCustomModel] = useState("")
-  const [imageUrlInput, setImageUrlInput] = useState("")
   const [uploadedImages, setUploadedImages] = useState<string[]>([]) // Image URLs
   const [isUploading, setIsUploading] = useState(false)
   const [enhancePrompt, setEnhancePrompt] = useState(true)
   const [enableUpsample, setEnableUpsample] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [showDebug, setShowDebug] = useState(false) // New: Debug mode
-  const [expandedErrors, setExpandedErrors] = useState<Record<string, boolean>>({})
-  const [isHistoryOpen, setIsHistoryOpen] = useState(true)
+  const [showDebug, setShowDebug] = useState(false)
+  const [credits, setCredits] = useState<number | null>(null)
+  
+  const [previewTask, setPreviewTask] = useState<VideoTask | null>(null)
+  const [previewImage, setPreviewImage] = useState<string | null>(null) // For ref image preview
+  const [showRulesDialog, setShowRulesDialog] = useState(false)
+  const promptInputRef = useRef<HTMLTextAreaElement>(null)
 
   // Tasks State
   const [tasks, setTasks] = useState<VideoTask[]>([])
@@ -87,21 +107,41 @@ export default function VideoPage() {
     try {
       const envModels = process.env.NEXT_PUBLIC_VIDEO_MODELS
       if (!envModels) return []
-      return JSON.parse(envModels) as { id: string; name: string }[]
+      return JSON.parse(envModels) as { id: string; name: string; credits?: number }[]
     } catch (e) {
       console.error("Failed to parse video models", e)
       return []
     }
   }, [])
 
-  // Set default model
+  // Get current model cost
+  const currentCost = useMemo(() => {
+    const model = videoModels.find(m => m.id === selectedModel)
+    return model?.credits || 0
+  }, [selectedModel, videoModels])
+
+  // Auth & Credits Check
   useEffect(() => {
-    if (videoModels.length > 0 && !selectedModel) {
-      setSelectedModel(videoModels[0].id)
-    } else if (!selectedModel) {
-      setSelectedModel("sora-2") // Fallback default
+    const checkUser = async () => {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) {
+        router.push('/login')
+        return
+      }
+
+      // Fetch credits
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('credits')
+        .eq('id', user.id)
+        .single()
+      
+      if (profile) {
+        setCredits(profile.credits)
+      }
     }
-  }, [videoModels, selectedModel])
+    checkUser()
+  }, [supabase, router])
 
   // Load tasks from LocalStorage
   useEffect(() => {
@@ -129,12 +169,8 @@ export default function VideoPage() {
   useEffect(() => {
     if (isLoaded) {
       try {
-        // Filter out large base64 images before saving to avoid QuotaExceededError
         const tasksToSave = tasks.map(task => {
-          // If images contain base64 data (long strings), remove them
-          // Keep images if they are short URLs (e.g. < 500 chars)
           const cleanImages = task.images?.filter(img => img.length < 1000)
-          
           return {
             ...task,
             images: cleanImages && cleanImages.length > 0 ? cleanImages : undefined
@@ -143,7 +179,6 @@ export default function VideoPage() {
         localStorage.setItem('foxio_video_tasks', JSON.stringify(tasksToSave))
       } catch (e) {
         console.error("Failed to save tasks to localStorage", e)
-        // If quota exceeded, try to clear old tasks or just fail silently
       }
     }
   }, [tasks, isLoaded])
@@ -191,11 +226,9 @@ export default function VideoPage() {
 
       for (const task of activeTasks) {
         try {
-          // console.log(`Polling task: ${task.taskId}`)
           const res = await fetch(`/api/generate/video?taskId=${task.taskId}`)
           const data = await res.json()
 
-          // Update task with latest data
           setTasks(prev => prev.map(t => {
             if (t.id !== task.id) return t
 
@@ -207,7 +240,6 @@ export default function VideoPage() {
             if (data.video_url) videoUrl = data.video_url
             else if (data.data && data.data[0]?.url) videoUrl = data.data[0].url
 
-            // Handle error object safely
             let errorMsg = t.error
             if (isFailed) {
               if (typeof data.error === 'string') {
@@ -219,6 +251,18 @@ export default function VideoPage() {
               }
             }
 
+            // If task just completed or failed, refresh credits to show updated balance (refund or confirm)
+            if ((isCompleted || isFailed) && t.status !== newStatus) {
+              // Refresh credits
+              supabase.auth.getUser().then(({ data: { user } }) => {
+                if (user) {
+                  supabase.from('profiles').select('credits').eq('id', user.id).single().then(({ data }) => {
+                    if (data) setCredits(data.credits)
+                  })
+                }
+              })
+            }
+
             return {
               ...t,
               status: newStatus,
@@ -226,7 +270,7 @@ export default function VideoPage() {
               error: errorMsg,
               progress: isCompleted ? 100 : t.progress,
               finishedAt: (isCompleted || isFailed) ? Date.now() : t.finishedAt,
-              lastResponse: data // Save raw response for debug
+              lastResponse: data
             }
           }))
 
@@ -244,15 +288,13 @@ export default function VideoPage() {
       clearInterval(progressInterval)
       clearInterval(apiInterval)
     }
-  }, []) 
+  }, [supabase]) 
 
   const handleUpload = async (file: File) => {
-    // Validate size (5MB)
     if (file.size > 5 * 1024 * 1024) {
       toast.error(`Image ${file.name} is too large (max 5MB)`)
       return
     }
-    // Validate type
     if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
       toast.error(`Image ${file.name} format not supported (JPG/PNG/WEBP only)`)
       return
@@ -263,7 +305,6 @@ export default function VideoPage() {
       const formData = new FormData()
       formData.append('file', file)
 
-      // Upload to tmpfiles.org
       const res = await fetch('https://tmpfiles.org/api/v1/upload', {
         method: 'POST',
         body: formData
@@ -272,7 +313,6 @@ export default function VideoPage() {
       const data = await res.json()
       
       if (data.status === 'success' && data.data.url) {
-        // Convert to direct link: https://tmpfiles.org/123/img.png -> https://tmpfiles.org/dl/123/img.png
         const directUrl = data.data.url.replace('tmpfiles.org/', 'tmpfiles.org/dl/')
         setUploadedImages(prev => [...prev, directUrl])
         toast.success("Image uploaded successfully")
@@ -299,12 +339,22 @@ export default function VideoPage() {
       return
     }
 
+    // Check credits
+    if (credits !== null && credits < currentCost) {
+      toast.error(`Insufficient credits. You need ${currentCost} credits but have ${credits}.`)
+      return
+    }
+
     setIsSubmitting(true)
 
-    // Use uploaded images
-    const images = uploadedImages
+    let images = [...uploadedImages]
 
-    // Create optimistic task
+    // Logic check for Sora
+    if (finalModel.includes('sora') && images.length > 1) {
+      toast.warning("Sora only supports 1 reference image. Using the first one.")
+      images = [images[0]]
+    }
+
     const newTask: VideoTask = {
       id: crypto.randomUUID(),
       prompt,
@@ -330,7 +380,8 @@ export default function VideoPage() {
           model: finalModel,
           images: images,
           enhance_prompt: enhancePrompt,
-          enable_upsample: enableUpsample
+          enable_upsample: enableUpsample,
+          resolution: resolution
         }),
       })
 
@@ -340,11 +391,12 @@ export default function VideoPage() {
         throw new Error(data.details || data.error || "Failed to submit task")
       }
 
-      // Update task with result
+      // Refresh credits after successful submission (pre-deducted)
+      const { data: profile } = await supabase.from('profiles').select('credits').eq('id', (await supabase.auth.getUser()).data.user?.id).single()
+      if (profile) setCredits(profile.credits)
+
       setTasks(prev => prev.map(t => {
         if (t.id !== newTask.id) return t
-
-        // Yunwu returns { id: "...", status: "pending" }
         if (data.id) {
           return { 
             ...t, 
@@ -363,10 +415,7 @@ export default function VideoPage() {
         }
       }))
 
-      toast.info("Task submitted, processing in background...")
-      // Keep prompt and images as requested
-      // setPrompt("") 
-      // setUploadedImages([]) 
+      toast.info(t.messages.task_submitted)
 
     } catch (err: any) {
       console.error(err)
@@ -375,399 +424,507 @@ export default function VideoPage() {
       setTasks(prev => prev.map(t => 
         t.id === newTask.id ? { ...t, status: 'failed', error: errMsg, finishedAt: Date.now() } : t
       ))
-      toast.error("Failed to submit task")
+      toast.error(errMsg || "Failed to submit task")
     } finally {
       setIsSubmitting(false)
     }
   }
 
-  const handleDelete = (id: string) => {
-    setTasks(prev => prev.filter(t => t.id !== id))
+  const captureLastFrame = async (videoUrl: string): Promise<string | null> => {
+    return new Promise((resolve) => {
+      const video = document.createElement('video')
+      video.crossOrigin = "anonymous"
+      video.src = videoUrl
+      video.currentTime = 1000 
+      
+      video.onloadedmetadata = () => {
+        video.currentTime = video.duration - 0.1
+      }
+
+      video.onseeked = async () => {
+        try {
+          const canvas = document.createElement('canvas')
+          canvas.width = video.videoWidth
+          canvas.height = video.videoHeight
+          const ctx = canvas.getContext('2d')
+          ctx?.drawImage(video, 0, 0)
+          
+          canvas.toBlob(async (blob) => {
+            if (!blob) {
+              resolve(null)
+              return
+            }
+            const formData = new FormData()
+            formData.append('file', blob, 'frame.jpg')
+            const res = await fetch('https://tmpfiles.org/api/v1/upload', {
+              method: 'POST',
+              body: formData
+            })
+            const data = await res.json()
+            if (data.status === 'success' && data.data.url) {
+              resolve(data.data.url.replace('tmpfiles.org/', 'tmpfiles.org/dl/'))
+            } else {
+              resolve(null)
+            }
+          }, 'image/jpeg')
+        } catch (e) {
+          console.error("Canvas error", e)
+          resolve(null)
+        }
+      }
+
+      video.onerror = () => resolve(null)
+    })
   }
 
-  const getDuration = (task: VideoTask) => {
-    const end = task.finishedAt || Date.now()
-    const seconds = Math.floor((end - task.createdAt) / 1000)
-    return `${seconds}s`
+  const handleExtend = async (task: VideoTask) => {
+    if (!task.videoUrl) return
+    
+    setPreviewTask(null) // Close dialog
+    toast.info("Extracting last frame...")
+    const frameUrl = await captureLastFrame(task.videoUrl)
+    
+    if (frameUrl) {
+      setUploadedImages([frameUrl])
+      setPrompt(task.prompt + " (Continued)")
+      
+      // Scroll to top
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+      
+      setTimeout(() => {
+        promptInputRef.current?.focus()
+        toast.success("Ready to extend! Please update the prompt and click Generate.")
+      }, 500)
+    } else {
+      toast.error(t.messages.extract_failed)
+    }
+  }
+
+  const handleDelete = (id: string) => {
+    setTasks(prev => prev.filter(t => t.id !== id))
+    if (previewTask?.id === id) setPreviewTask(null)
   }
 
   return (
-    <div className="p-8 space-y-8 max-w-6xl mx-auto">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <div className="p-2 w-fit rounded-md bg-orange-700/10">
-            <Video className="w-8 h-8 text-orange-700" />
+    <div className="h-[calc(100vh-4rem)] overflow-y-auto bg-background">
+      {/* Top Panel: Creation Area */}
+      <div className="border-b bg-card p-6 space-y-6 shadow-sm z-10 relative">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-md bg-orange-600/10 text-orange-600">
+              <Video className="w-5 h-5" />
+            </div>
+            <h2 className="font-bold tracking-tight text-lg">{t.title}</h2>
           </div>
-          <div>
-            <h2 className="text-3xl font-bold tracking-tight">Ad Video Generator</h2>
-            <p className="text-muted-foreground">
-              Produce engaging ad videos with Sora & Veo models.
-            </p>
+          <div className="flex items-center gap-4">
+            {/* Credits Display */}
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-muted rounded-full border">
+              <Coins className="w-4 h-4 text-yellow-500" />
+              <span className="text-sm font-medium">{credits !== null ? credits : '...'}</span>
+              <span className="text-xs text-muted-foreground">credits</span>
+            </div>
+
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Checkbox 
-            id="debug-mode" 
-            checked={showDebug} 
-            onCheckedChange={(checked) => setShowDebug(checked === true)} 
-          />
-          <Label htmlFor="debug-mode" className="text-xs text-muted-foreground cursor-pointer">Debug Mode</Label>
-        </div>
-      </div>
 
-      <div className="flex flex-col gap-8">
-        {/* Top: Form */}
-        <div className="w-full max-w-2xl mx-auto space-y-6">
-          <div className="p-6 rounded-lg border bg-card text-card-foreground shadow-sm space-y-6">
-            <div className="space-y-2">
-              <Label>Video Script / Prompt</Label>
-              <Textarea 
-                placeholder="A cinematic drone shot of a futuristic city at night..."
-                className="h-32 resize-none"
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-              />
+        <div className="max-w-5xl mx-auto w-full space-y-6">
+          {/* Prompt Input */}
+          <div className="relative">
+            <Textarea 
+              ref={promptInputRef}
+              placeholder={t.form.script_placeholder}
+              className="h-32 resize-none bg-muted/50 focus:bg-background transition-colors text-base p-4 border-2 focus:border-orange-500/50"
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+            />
+            <div className="absolute bottom-3 right-3 text-xs text-muted-foreground">
+              {prompt.length} chars
             </div>
+          </div>
 
-            <div className="space-y-2">
-              <Label>Reference Images (Optional)</Label>
-              
-              {/* Image Upload Area */}
-              <div className="grid grid-cols-3 gap-2">
-                {uploadedImages.map((img, index) => (
-                  <div key={index} className="relative aspect-square rounded-md overflow-hidden border group bg-muted">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={img} alt={`Ref ${index}`} className="w-full h-full object-cover" />
-                    <button
-                      onClick={() => setUploadedImages(prev => prev.filter((_, i) => i !== index))}
-                      className="absolute top-1 right-1 bg-black/50 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      <XCircle className="w-4 h-4" />
-                    </button>
-                  </div>
-                ))}
-                
-                <div className="aspect-square rounded-md border-2 border-dashed flex flex-col items-center justify-center text-muted-foreground hover:bg-muted/50 transition-colors cursor-pointer relative">
-                  {isUploading ? (
-                    <Loader2 className="w-6 h-6 animate-spin text-orange-500" />
-                  ) : (
-                    <>
-                      <input 
-                        type="file" 
-                        accept="image/jpeg,image/png,image/webp" 
-                        multiple
-                        className="absolute inset-0 opacity-0 cursor-pointer"
-                        onChange={(e) => {
-                          const files = Array.from(e.target.files || [])
-                          files.forEach(file => handleUpload(file))
-                          e.target.value = ''
-                        }}
-                      />
-                      <UploadCloud className="w-6 h-6 mb-1" />
-                      <span className="text-[10px]">Upload</span>
-                    </>
-                  )}
-                </div>
-              </div>
-
-              {/* URL Input Fallback */}
-              <div className="flex gap-2 mt-2">
-                <Input 
-                  placeholder="Or paste image URL..." 
-                  value={imageUrlInput}
-                  onChange={(e) => setImageUrlInput(e.target.value)}
-                  className="h-8 text-xs"
-                />
-                <Button 
-                  variant="secondary"
-                  size="sm"
-                  className="h-8"
-                  onClick={() => {
-                    if (!imageUrlInput.trim()) return
-                    if (!imageUrlInput.startsWith('http')) {
-                      toast.error("Please enter a valid URL")
-                      return
-                    }
-                    setUploadedImages(prev => [...prev, imageUrlInput.trim()])
-                    setImageUrlInput("")
-                  }}
-                >
-                  Add URL
-                </Button>
-              </div>
-              
-              <div className="text-[10px] text-muted-foreground space-y-1">
-                <p>• Images are automatically uploaded to a temporary host for API compatibility.</p>
-                <p>• Supported formats: JPG, PNG, WEBP (Max 5MB)</p>
-              </div>
-            </div>
-            
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label>Aspect Ratio</Label>
-                  <Select value={aspectRatio} onValueChange={setAspectRatio}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select ratio" />
-                    </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="9:16">9:16 (Portrait)</SelectItem>
-                    <SelectItem value="16:9">16:9 (Landscape)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Duration</Label>
-                <Select value={duration} onValueChange={setDuration}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select duration" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="5">5s (Veo/Luma)</SelectItem>
-                    <SelectItem value="10">10s (Veo/Sora)</SelectItem>
-                    <SelectItem value="15">15s (Sora)</SelectItem>
-                    <SelectItem value="25">25s (Sora Pro)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label>Model</Label>
+          {/* Controls Row */}
+          <div className="flex flex-wrap items-end gap-4">
+            <div className="space-y-1.5">
+              <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t.form.model}</Label>
               <Select value={selectedModel} onValueChange={setSelectedModel}>
-                <SelectTrigger>
+                <SelectTrigger className="w-[180px]">
                   <SelectValue placeholder="Select model" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="sora-2">Sora 2</SelectItem>
-                  <SelectItem value="sora-2-pro">Sora 2 Pro</SelectItem>
-                  <SelectItem value="luma-video">Luma Dream Machine</SelectItem>
-                  <SelectItem value="runway-gen3">Runway Gen-3</SelectItem>
-                  <SelectItem value="veo3-fast">Google Veo 3 Fast</SelectItem>
-                  <SelectItem value="kling-video">Kling AI</SelectItem>
+                  {videoModels.map(model => (
+                    <SelectItem key={model.id} value={model.id}>
+                      <div className="flex items-center justify-between w-full gap-2">
+                        <span>{model.name}</span>
+                        <Badge variant="secondary" className="text-[10px] h-4 px-1">{model.credits} credits</Badge>
+                      </div>
+                    </SelectItem>
+                  ))}
                   <SelectItem value="custom">Custom...</SelectItem>
                 </SelectContent>
               </Select>
-                {selectedModel === 'custom' && (
-                  <input 
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm mt-2"
-                    placeholder="Enter model ID"
-                    value={customModel}
-                    onChange={(e) => setCustomModel(e.target.value)}
-                  />
-                )}
-              </div>
+            </div>
 
-              {/* Advanced Options */}
-              <div className="pt-2 border-t">
-                <Collapsible>
-                  <CollapsibleTrigger className="flex items-center text-sm text-muted-foreground hover:text-foreground">
-                    <ChevronDown className="w-4 h-4 mr-1" />
-                    Advanced Options
-                  </CollapsibleTrigger>
-                  <CollapsibleContent className="space-y-4 pt-4">
-                    <div className="flex items-center justify-between">
-                      <div className="space-y-0.5">
-                        <Label className="text-base">Enhance Prompt</Label>
-                        <p className="text-xs text-muted-foreground">Optimize prompt for better results</p>
-                      </div>
-                      <Switch checked={enhancePrompt} onCheckedChange={setEnhancePrompt} />
+            <div className="space-y-1.5">
+              <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t.form.aspect_ratio}</Label>
+              <Select value={aspectRatio} onValueChange={setAspectRatio}>
+                <SelectTrigger className="w-[140px]">
+                  <SelectValue placeholder="Select ratio" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="16:9">16:9 (Landscape)</SelectItem>
+                  <SelectItem value="9:16">9:16 (Portrait)</SelectItem>
+                  <SelectItem value="1:1">1:1 (Square)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t.form.duration}</Label>
+              <Select value={duration} onValueChange={setDuration}>
+                <SelectTrigger className="w-[140px]">
+                  <SelectValue placeholder="Select duration" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="5">5s</SelectItem>
+                  <SelectItem value="10">10s</SelectItem>
+                  <SelectItem value="15">15s</SelectItem>
+                  <SelectItem value="25">25s</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Resolution</Label>
+              <Select value={resolution} onValueChange={setResolution}>
+                <SelectTrigger className="w-[140px]">
+                  <SelectValue placeholder="Select resolution" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="720p">720p (Standard)</SelectItem>
+                  <SelectItem value="1080p">1080p (High Def)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Image Upload Trigger */}
+            <div className="space-y-1.5">
+              <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t.form.ref_images_label}</Label>
+              <div className="flex items-center gap-3">
+                <div className="flex gap-2">
+                  {uploadedImages.map((img, index) => (
+                    <div key={index} className="relative w-10 h-10 rounded overflow-hidden border group bg-muted cursor-pointer" onClick={() => setPreviewImage(img)}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={img} alt={`Ref ${index}`} className="w-full h-full object-cover" />
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setUploadedImages(prev => prev.filter((_, i) => i !== index))
+                        }}
+                        className="absolute top-0 right-0 bg-black/50 p-0.5 rounded-bl opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        <XCircle className="w-3 h-3 text-white" />
+                      </button>
                     </div>
-                    <div className="flex items-center justify-between">
-                      <div className="space-y-0.5">
-                        <Label className="text-base">Upsample (HD)</Label>
-                        <p className="text-xs text-muted-foreground">Enable high definition output</p>
-                      </div>
-                      <Switch checked={enableUpsample} onCheckedChange={setEnableUpsample} />
-                    </div>
-                  </CollapsibleContent>
-                </Collapsible>
+                  ))}
+                  <div className="w-10 h-10 rounded border-2 border-dashed flex items-center justify-center text-muted-foreground hover:bg-muted/50 transition-colors cursor-pointer relative group">
+                    {isUploading ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <>
+                        <input 
+                          type="file" 
+                          accept="image/jpeg,image/png,image/webp" 
+                          multiple
+                          className="absolute inset-0 opacity-0 cursor-pointer"
+                          onChange={(e) => {
+                            const files = Array.from(e.target.files || [])
+                            files.forEach(file => handleUpload(file))
+                            e.target.value = ''
+                          }}
+                        />
+                        <UploadCloud className="w-4 h-4 group-hover:text-orange-500" />
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* Info Trigger */}
+                <div 
+                  className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors bg-muted/50 px-2 py-1.5 rounded-md border hover:bg-muted"
+                  onClick={() => setShowRulesDialog(true)}
+                  title="Click to view rules"
+                >
+                  <Info className="w-3.5 h-3.5" />
+                  <span>Veo: max 3, Sora: max 1</span>
+                </div>
               </div>
             </div>
 
+            <div className="flex-1" />
+
             <Button 
-              className="w-full bg-orange-600 hover:bg-orange-700"
+              className="bg-orange-600 hover:bg-orange-700 h-10 px-8 text-base shadow-lg shadow-orange-900/20 font-semibold"
               onClick={handleGenerate}
               disabled={isSubmitting}
             >
               {isSubmitting ? (
                 <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Submitting...
+                  <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                  Generating...
                 </>
               ) : (
-                "Generate Video"
+                <>
+                  <Sparkles className="mr-2 h-5 w-5" />
+                  Generate Video
+                  <span className="ml-2 text-xs opacity-80 bg-black/20 px-1.5 py-0.5 rounded">
+                    -{currentCost}
+                  </span>
+                </>
               )}
             </Button>
           </div>
         </div>
-        
-        {/* Bottom: History List */}
-        <Collapsible open={isHistoryOpen} onOpenChange={setIsHistoryOpen} className="w-full max-w-4xl mx-auto space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-lg font-medium">Generation History</h3>
-            <CollapsibleTrigger asChild>
-              <Button variant="ghost" size="sm">
-                {isHistoryOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-              </Button>
-            </CollapsibleTrigger>
+      </div>
+
+      {/* Bottom Panel: Gallery Area (Flex Row) */}
+      <div className="p-6 max-w-7xl mx-auto">
+        <div className="flex items-center justify-between mb-6">
+          <h3 className="font-semibold text-lg flex items-center gap-2">
+            <LayoutGrid className="w-5 h-5" />
+            My Creations
+          </h3>
+          <span className="text-sm text-muted-foreground">{tasks.length} videos</span>
+        </div>
+
+        {tasks.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-32 text-muted-foreground border-2 border-dashed rounded-xl bg-card/50">
+            <Video className="w-16 h-16 mb-4 opacity-20" />
+            <p className="text-lg font-medium">No videos yet</p>
+            <p className="text-sm opacity-70">Create your first masterpiece above</p>
           </div>
-          
-          <CollapsibleContent>
-            {tasks.length === 0 ? (
-              <div className="text-center py-12 border-2 border-dashed rounded-lg text-muted-foreground">
-                No videos generated yet. Start by creating one!
+        ) : (
+          <div className="flex flex-wrap gap-4 pb-20">
+            {tasks.map(task => {
+              const isActive = isTaskActive(task.status)
+              const isCompleted = !isActive && !['failed', 'error', 'video_generation_failed'].includes(task.status.toLowerCase())
+              const isFailed = !isActive && !isCompleted
+
+              return (
+                <Card 
+                  key={task.id} 
+                  className="relative h-72 rounded-lg overflow-hidden group cursor-pointer border-0 shadow-sm hover:shadow-xl transition-all bg-black flex-grow-0 flex-shrink-0"
+                  style={{ aspectRatio: task.aspectRatio.replace(':', '/') }}
+                  onClick={() => setPreviewTask(task)}
+                >
+                  {isCompleted && task.videoUrl ? (
+                    <video 
+                      src={task.videoUrl} 
+                      className="w-full h-full object-cover"
+                      muted
+                      onMouseOver={e => e.currentTarget.play()}
+                      onMouseOut={e => {
+                        e.currentTarget.pause()
+                        e.currentTarget.currentTime = 0
+                      }}
+                      poster={task.images?.[0]}
+                    />
+                  ) : isFailed ? (
+                    <div className="w-full h-full flex items-center justify-center bg-muted">
+                      <XCircle className="w-8 h-8 text-red-400" />
+                    </div>
+                  ) : (
+                    <div className="w-full h-full flex flex-col items-center justify-center bg-muted/50 p-6 text-center">
+                      <Loader2 className="w-8 h-8 text-orange-500 animate-spin mb-4" />
+                      <Progress value={task.progress} className="h-2 w-full mb-2" />
+                      <span className="text-xs font-medium text-foreground mb-1">Generating Video...</span>
+                      <span className="text-[10px] text-muted-foreground">
+                        This may take 10-20 minutes.<br/>You can leave this page.
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Status Badge */}
+                  <div className="absolute top-2 left-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <Badge variant={isCompleted ? "default" : isFailed ? "destructive" : "secondary"} className="shadow-sm backdrop-blur-md bg-opacity-80 text-[10px] h-5 px-1.5">
+                      {task.status}
+                    </Badge>
+                  </div>
+
+                  {/* Duration Badge */}
+                  <div className="absolute bottom-2 right-2 bg-black/60 backdrop-blur-md text-white text-[10px] px-1.5 py-0.5 rounded flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <Clock className="w-3 h-3" />
+                    {task.duration}s
+                  </div>
+
+                  {/* Hover Overlay Info */}
+                  <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity p-4 flex flex-col justify-end">
+                    <p className="text-white text-xs line-clamp-3 font-medium leading-relaxed mb-6">
+                      {task.prompt}
+                    </p>
+                  </div>
+                </Card>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Video Preview Dialog */}
+      <Dialog open={!!previewTask} onOpenChange={(open) => !open && setPreviewTask(null)}>
+        <DialogContent className="max-w-5xl p-0 overflow-hidden bg-card border-none shadow-2xl">
+          {previewTask && (
+            <div className="flex flex-col md:flex-row h-[80vh] md:h-[600px]">
+              {/* Left: Video Player */}
+              <div className="flex-1 bg-black flex items-center justify-center relative">
+                {previewTask.videoUrl ? (
+                  <video 
+                    src={previewTask.videoUrl} 
+                    controls 
+                    autoPlay 
+                    className="max-w-full max-h-full"
+                  />
+                ) : (
+                  <div className="text-white/50 flex flex-col items-center">
+                    <Video className="w-12 h-12 mb-2 opacity-50" />
+                    <span>Video not available</span>
+                  </div>
+                )}
               </div>
-            ) : (
-              <div className="space-y-4">
-                {tasks.map(task => {
-                  const isActive = isTaskActive(task.status)
-                  const isCompleted = !isActive && !['failed', 'error', 'video_generation_failed'].includes(task.status.toLowerCase())
-                  const isFailed = !isActive && !isCompleted
 
-                  return (
-                    <div key={task.id} className="flex flex-col gap-4 p-4 rounded-lg border bg-card shadow-sm relative overflow-hidden">
-                      {/* Status Indicator Line */}
-                      <div className={cn(
-                        "absolute left-0 top-0 bottom-0 w-1",
-                        isCompleted ? "bg-green-500" :
-                        isFailed ? "bg-red-500" :
-                        "bg-orange-500 animate-pulse"
-                      )} />
+              {/* Right: Details */}
+              <div className="w-full md:w-[350px] bg-card p-6 flex flex-col border-l">
+                <DialogHeader>
+                  <DialogTitle className="text-lg font-bold">Video Details</DialogTitle>
+                  <DialogDescription className="text-xs">
+                    Created on {new Date(previewTask.createdAt).toLocaleString()}
+                  </DialogDescription>
+                </DialogHeader>
 
-                      <div className="flex flex-col sm:flex-row gap-4">
-                        {/* Video Preview or Placeholder */}
-                        <div className="w-full sm:w-48 h-48 bg-black rounded-md flex-shrink-0 overflow-hidden flex items-center justify-center relative group">
-                          {isCompleted && task.videoUrl ? (
-                            <video 
-                              src={task.videoUrl} 
-                              controls 
-                              className="w-full h-full object-contain"
-                            />
-                          ) : isFailed ? (
-                            <XCircle className="w-8 h-8 text-red-400" />
-                          ) : (
-                            <Loader2 className="w-8 h-8 text-orange-500 animate-spin" />
-                          )}
-                          
-                          {/* Reference Images Indicator */}
-                          {task.images && task.images.length > 0 && (
-                            <div className="absolute top-1 right-1 bg-black/50 text-white text-[10px] px-1.5 py-0.5 rounded flex items-center gap-1">
-                              <ImageIcon className="w-3 h-3" />
-                              {task.images.length}
+                <ScrollArea className="flex-1 py-4 -mx-2 px-2">
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <Label className="text-xs font-medium text-muted-foreground uppercase">Prompt</Label>
+                      <p className="text-sm leading-relaxed bg-muted/50 p-3 rounded-md border">
+                        {previewTask.prompt}
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <Label className="text-xs font-medium text-muted-foreground uppercase">Model</Label>
+                        <div className="text-sm font-medium">{previewTask.model}</div>
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs font-medium text-muted-foreground uppercase">Duration</Label>
+                        <div className="text-sm font-medium">{previewTask.duration}s</div>
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs font-medium text-muted-foreground uppercase">Ratio</Label>
+                        <div className="text-sm font-medium">{previewTask.aspectRatio}</div>
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs font-medium text-muted-foreground uppercase">Status</Label>
+                        <Badge variant="outline">{previewTask.status}</Badge>
+                      </div>
+                    </div>
+
+                    {previewTask.images && previewTask.images.length > 0 && (
+                      <div className="space-y-2">
+                        <Label className="text-xs font-medium text-muted-foreground uppercase">Reference Images</Label>
+                        <div className="grid grid-cols-3 gap-2">
+                          {previewTask.images.map((img, i) => (
+                            <div key={i} className="aspect-square rounded overflow-hidden border cursor-pointer hover:opacity-80" onClick={() => setPreviewImage(img)}>
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img src={img} alt="" className="w-full h-full object-cover" />
                             </div>
-                          )}
-                        </div>
-
-                        {/* Content */}
-                        <div className="flex-1 min-w-0 space-y-2">
-                          <div className="flex justify-between items-start">
-                            <p className="font-medium truncate pr-8">{task.prompt}</p>
-                            <Button 
-                              variant="ghost" 
-                              size="icon" 
-                              className="h-6 w-6 text-muted-foreground hover:text-destructive"
-                              onClick={() => handleDelete(task.id)}
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </Button>
-                          </div>
-                          
-                          <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
-                            <span className="px-2 py-0.5 rounded-full bg-secondary">
-                              {task.model}
-                            </span>
-                            <span className="px-2 py-0.5 rounded-full bg-secondary">
-                              {task.aspectRatio}
-                            </span>
-                            {task.duration && (
-                              <span className="px-2 py-0.5 rounded-full bg-secondary">
-                                {task.duration}s
-                              </span>
-                            )}
-                            <span className="flex items-center gap-1 ml-auto sm:ml-0">
-                              <Clock className="w-3 h-3" />
-                              {getDuration(task)}
-                            </span>
-                          </div>
-
-                          {/* Status & Progress */}
-                          <div className="space-y-1 pt-2">
-                            <div className="flex justify-between text-xs">
-                              <span className={cn(
-                                "font-medium uppercase text-[10px] tracking-wider",
-                                isCompleted ? "text-green-600" :
-                                isFailed ? "text-red-600" :
-                                "text-orange-600"
-                              )}>
-                                {task.status}
-                              </span>
-                              <span>{Math.round(task.progress)}%</span>
-                            </div>
-                            <Progress value={task.progress} className="h-1.5" />
-                            {task.error && (
-                              <div className="mt-3 p-3 bg-red-50 border border-red-100 rounded-md">
-                                <div className="flex items-start gap-2">
-                                  <AlertCircle className="w-4 h-4 text-red-600 mt-0.5 flex-shrink-0" />
-                                  <span className="text-xs text-red-700 font-medium leading-5">
-                                    {getFriendlyErrorMessage(task.error)}
-                                  </span>
-                                </div>
-                                
-                                {/* Error Details Collapsible */}
-                                <Collapsible 
-                                  open={expandedErrors[task.id]} 
-                                  onOpenChange={(open) => setExpandedErrors(prev => ({ ...prev, [task.id]: open }))}
-                                  className="mt-2"
-                                >
-                                  <CollapsibleTrigger asChild>
-                                    <Button variant="ghost" size="sm" className="h-5 px-0 text-[10px] text-muted-foreground hover:text-foreground">
-                                      {expandedErrors[task.id] ? <ChevronUp className="w-3 h-3 mr-1" /> : <ChevronDown className="w-3 h-3 mr-1" />}
-                                      {expandedErrors[task.id] ? "Hide Details" : "Show Error Details"}
-                                    </Button>
-                                  </CollapsibleTrigger>
-                                  <CollapsibleContent>
-                                    <div className="p-2 bg-white rounded text-[10px] font-mono text-red-700 overflow-x-auto mt-1 border border-red-100">
-                                      <pre>{JSON.stringify(task.lastResponse, null, 2)}</pre>
-                                    </div>
-                                  </CollapsibleContent>
-                                </Collapsible>
-                              </div>
-                            )}
-                          </div>
-                          
-                          {/* Actions */}
-                          {isCompleted && task.videoUrl && (
-                            <div className="pt-1">
-                              <Button variant="link" size="sm" className="h-auto p-0 text-orange-600" asChild>
-                                <a href={task.videoUrl} download target="_blank" rel="noopener noreferrer">
-                                  <Download className="w-3 h-3 mr-1" />
-                                  Download
-                                </a>
-                              </Button>
-                            </div>
-                          )}
+                          ))}
                         </div>
                       </div>
+                    )}
 
-                      {/* Debug Info */}
-                      {showDebug && task.lastResponse && (
-                        <div className="mt-2 p-2 bg-muted/50 rounded text-[10px] font-mono overflow-x-auto border border-dashed">
-                          <div className="flex items-center gap-2 mb-1 text-muted-foreground">
-                            <Terminal className="w-3 h-3" />
-                            <span>Raw API Response</span>
-                          </div>
-                          <pre>{JSON.stringify(task.lastResponse, null, 2)}</pre>
-                        </div>
-                      )}
+                    {previewTask.error && (
+                      <Alert variant="destructive">
+                        <AlertCircle className="h-4 w-4" />
+                        <AlertTitle>Error</AlertTitle>
+                        <AlertDescription className="text-xs">
+                          {getFriendlyErrorMessage(previewTask.error)}
+                        </AlertDescription>
+                      </Alert>
+                    )}
+                  </div>
+                </ScrollArea>
+
+                <div className="pt-4 border-t space-y-2">
+                  {previewTask.videoUrl && (
+                    <div className="grid grid-cols-2 gap-2">
+                      <Button variant="outline" className="w-full" asChild>
+                        <a href={previewTask.videoUrl} download target="_blank" rel="noopener noreferrer">
+                          <Download className="w-4 h-4 mr-2" />
+                          Download
+                        </a>
+                      </Button>
+                      <Button className="w-full" onClick={() => handleExtend(previewTask)}>
+                        <RefreshCw className="w-4 h-4 mr-2" />
+                        Extend
+                      </Button>
                     </div>
-                  )
-                })}
+                  )}
+                  <Button 
+                    variant="ghost" 
+                    className="w-full text-red-500 hover:text-red-600 hover:bg-red-50"
+                    onClick={() => handleDelete(previewTask.id)}
+                  >
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    Delete Video
+                  </Button>
+                </div>
               </div>
-            )}
-          </CollapsibleContent>
-        </Collapsible>
-      </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Image Preview Dialog */}
+      <Dialog open={!!previewImage} onOpenChange={(open) => !open && setPreviewImage(null)}>
+        <DialogContent className="max-w-3xl p-0 overflow-hidden bg-transparent border-none shadow-none">
+          <div className="relative flex items-center justify-center">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={previewImage || ''} alt="Preview" className="max-w-full max-h-[80vh] rounded-lg shadow-2xl" />
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Rules Dialog */}
+      <Dialog open={showRulesDialog} onOpenChange={setShowRulesDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Info className="w-5 h-5 text-orange-500" />
+              Reference Image Rules
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <h4 className="font-medium text-sm">Image Limits</h4>
+              <ul className="text-sm text-muted-foreground list-disc pl-4 space-y-1">
+                <li><strong>Google Veo:</strong> Supports up to <strong>3</strong> reference images.</li>
+                <li><strong>Sora:</strong> Supports only <strong>1</strong> reference image.</li>
+              </ul>
+            </div>
+            
+            <Alert variant="destructive" className="bg-red-50 border-red-200 text-red-800">
+              <AlertTriangle className="h-4 w-4 text-red-600" />
+              <AlertTitle className="text-red-800">Important Warning for Sora</AlertTitle>
+              <AlertDescription className="text-red-700 text-xs mt-1">
+                Sora currently <strong>does not support direct human portraits</strong> as reference images. Uploading portraits will cause the generation to fail. Please use detailed text descriptions for characters instead.
+              </AlertDescription>
+            </Alert>
+          </div>
+          <DialogFooter>
+            <Button onClick={() => setShowRulesDialog(false)}>Got it</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

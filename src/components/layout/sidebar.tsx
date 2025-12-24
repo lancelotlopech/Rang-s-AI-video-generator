@@ -22,7 +22,11 @@ import {
   PanelLeftOpen,
   Sun,
   Moon,
+  LogOut,
 } from "lucide-react"
+import { createClient } from "@/lib/supabase/client"
+import { useRouter } from "next/navigation"
+import { toast } from "sonner"
 
 interface SidebarProps extends React.HTMLAttributes<HTMLDivElement> {
   isCollapsed?: boolean
@@ -32,50 +36,58 @@ interface SidebarProps extends React.HTMLAttributes<HTMLDivElement> {
 export function Sidebar({ className, isCollapsed = false, toggleCollapse }: SidebarProps) {
   const pathname = usePathname()
   const { theme, setTheme } = useTheme()
+  const router = useRouter()
+  const supabase = createClient()
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut()
+    router.push('/login')
+    toast.success("Logged out successfully")
+  }
 
   const routes = [
+    // {
+    //   label: "Overview",
+    //   icon: LayoutDashboard,
+    //   href: "/dashboard",
+    //   color: "text-sky-500",
+    // },
+    // {
+    //   label: "Screenshot Studio",
+    //   icon: Smartphone,
+    //   href: "/dashboard/screenshot",
+    //   color: "text-violet-500",
+    // },
+    // {
+    //   label: "App Store Studio",
+    //   icon: Smartphone,
+    //   href: "/dashboard/studio",
+    //   color: "text-indigo-500",
+    // },
+    // {
+    //   label: "Icon & Illustration",
+    //   icon: Palette,
+    //   href: "/dashboard/icon",
+    //   color: "text-pink-700",
+    // },
     {
-      label: "Overview",
-      icon: LayoutDashboard,
-      href: "/dashboard",
-      color: "text-sky-500",
-    },
-    {
-      label: "Screenshot Studio",
-      icon: Smartphone,
-      href: "/dashboard/screenshot",
-      color: "text-violet-500",
-    },
-    {
-      label: "App Store Studio",
-      icon: Smartphone,
-      href: "/dashboard/studio",
-      color: "text-indigo-500",
-    },
-    {
-      label: "Icon & Illustration",
-      icon: Palette,
-      href: "/dashboard/icon",
-      color: "text-pink-700",
-    },
-    {
-      label: "Ad Video Generator",
+      label: "Video Generator",
       icon: Video,
       href: "/dashboard/video",
       color: "text-orange-700",
     },
-    {
-      label: "AI Chat Assistant",
-      icon: MessageSquare,
-      href: "/dashboard/chat",
-      color: "text-blue-500",
-    },
-    {
-      label: "My Gallery",
-      icon: ImageIcon,
-      href: "/dashboard/gallery",
-      color: "text-emerald-500",
-    },
+    // {
+    //   label: "AI Chat Assistant",
+    //   icon: MessageSquare,
+    //   href: "/dashboard/chat",
+    //   color: "text-blue-500",
+    // },
+    // {
+    //   label: "My Gallery",
+    //   icon: ImageIcon,
+    //   href: "/dashboard/gallery",
+    //   color: "text-emerald-500",
+    // },
     {
       label: "Billing & Credits",
       icon: CreditCard,
@@ -139,6 +151,20 @@ export function Sidebar({ className, isCollapsed = false, toggleCollapse }: Side
             <Moon className="absolute h-5 w-5 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
           </div>
           {!isCollapsed && <span className="ml-2 whitespace-nowrap overflow-hidden">Theme</span>}
+        </Button>
+
+        {/* Logout */}
+        <Button
+          variant="ghost"
+          className={cn(
+            "w-full transition-all duration-300 text-red-500 hover:text-red-600 hover:bg-red-50", 
+            isCollapsed ? "justify-center px-2" : "justify-start"
+          )}
+          onClick={handleLogout}
+          title={isCollapsed ? "Logout" : undefined}
+        >
+          <LogOut className="h-5 w-5 shrink-0" />
+          {!isCollapsed && <span className="ml-2 whitespace-nowrap overflow-hidden">Logout</span>}
         </Button>
 
         {/* Collapse Toggle */}
