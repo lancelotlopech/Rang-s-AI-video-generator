@@ -4,8 +4,24 @@ import { createClient } from '@/lib/supabase/server'
 // Allow streaming responses up to 60 seconds
 export const maxDuration = 60
 
-function getEndpoints() {
-  const apiKey = process.env.YUNWU_API_KEY || process.env.OPENAI_API_KEY
+async function getEndpoints(supabase: any) {
+  // 1. Try to get from DB first
+  let apiKey = null
+  try {
+    const { data } = await supabase
+      .from('app_config')
+      .select('value')
+      .eq('key', 'YUNWU_API_KEY')
+      .single()
+    if (data) apiKey = data.value
+  } catch (e) {
+    // Ignore DB error, fallback to env
+  }
+
+  // 2. Fallback to Env
+  if (!apiKey) {
+    apiKey = process.env.YUNWU_API_KEY || process.env.OPENAI_API_KEY
+  }
   
   // Explicit endpoints from env
   let createEndpoint = process.env.YUNWU_VIDEO_ENDPOINT
@@ -46,7 +62,7 @@ export async function POST(req: Request) {
 
     const body = await req.json()
     const { prompt, aspectRatio, model, images, duration, enhance_prompt, enable_upsample, resolution } = body
-    const { apiKey, createEndpoint } = getEndpoints()
+    const { apiKey, createEndpoint } = await getEndpoints(supabase)
 
     if (!apiKey) {
       return NextResponse.json(
@@ -58,7 +74,7 @@ export async function POST(req: Request) {
     // 0. Rate Limit Check (2 requests per minute)
     const oneMinuteAgo = new Date(Date.now() - 60 * 1000).toISOString()
     const { count, error: rateLimitError } = await supabase
-      .from('generations')
+      .from('video_generations')
       .select('*', { count: 'exact', head: true })
       .eq('user_id', user.id)
       .gte('created_at', oneMinuteAgo)
@@ -89,22 +105,8 @@ export async function POST(req: Request) {
     console.log(`[Video API] Creating task: ${model} for user ${user.id} (Cost: ${cost})`)
 
     // 2. Log Generation Start
-    const { data: genLog, error: logError } = await supabase
-      .from('generations')
-      .insert({
-        user_id: user.id,
-        type: 'video',
-        model: model,
-        status: 'pending',
-        cost: cost
-      })
-      .select()
-      .single()
-
-    if (logError) {
-      console.error('Failed to log generation:', logError)
-      // Don't block execution, but it's bad practice
-    }
+    // Note: Frontend now handles the initial DB insertion.
+    // We trust the frontend to update it with the Task ID.
 
     let payload: any = {}
 
@@ -186,12 +188,7 @@ export async function POST(req: Request) {
       await supabase.rpc('increment_credits', { amount: cost })
 
       // Update log status
-      if (genLog) {
-        await supabase
-          .from('generations')
-          .update({ status: 'failed' })
-          .eq('id', genLog.id)
-      }
+      // (Frontend handles this)
 
       return NextResponse.json(
         { error: 'Provider Error', details: errorText, status: response.status },
@@ -236,7 +233,8 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: 'Missing taskId' }, { status: 400 })
     }
 
-    const { apiKey, queryEndpoint } = getEndpoints()
+    const supabase = await createClient()
+    const { apiKey, queryEndpoint } = await getEndpoints(supabase)
     
     // Yunwu Query: GET /v1/video/query?id={taskId}
     const pollUrl = `${queryEndpoint}?id=${taskId}`

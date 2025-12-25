@@ -296,16 +296,29 @@ export default function VideoPage() {
               }
             }
 
-            // If task just completed or failed, refresh credits to show updated balance (refund or confirm)
-            if ((isCompleted || isFailed) && t.status !== newStatus) {
-              // Refresh credits
-              supabase.auth.getUser().then(({ data: { user } }) => {
-                if (user) {
-                  supabase.from('profiles').select('credits').eq('id', user.id).single().then(({ data }) => {
-                    if (data) setCredits(data.credits)
-                  })
-                }
-              })
+            // Update DB if status changed
+            if (t.status !== newStatus || t.videoUrl !== videoUrl) {
+              supabase
+                .from('video_generations')
+                .update({ 
+                  status: newStatus, 
+                  video_url: videoUrl, 
+                  error_reason: errorMsg,
+                  updated_at: new Date().toISOString()
+                })
+                .eq('id', t.id)
+                .then(() => {
+                  // Refresh credits if completed/failed
+                  if (isCompleted || isFailed) {
+                    supabase.auth.getUser().then(({ data: { user } }) => {
+                      if (user) {
+                        supabase.from('profiles').select('credits').eq('id', user.id).single().then(({ data }) => {
+                          if (data) setCredits(data.credits)
+                        })
+                      }
+                    })
+                  }
+                })
             }
 
             return {
@@ -545,9 +558,12 @@ export default function VideoPage() {
     }
   }
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     setTasks(prev => prev.filter(t => t.id !== id))
     if (previewTask?.id === id) setPreviewTask(null)
+    
+    await supabase.from('video_generations').delete().eq('id', id)
+    toast.success("Record deleted")
   }
 
   return (
