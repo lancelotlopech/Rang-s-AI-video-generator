@@ -74,9 +74,10 @@ export async function POST(req: Request) {
     // 0. Rate Limit Check (2 requests per minute)
     const oneMinuteAgo = new Date(Date.now() - 60 * 1000).toISOString()
     const { count, error: rateLimitError } = await supabase
-      .from('video_generations')
+      .from('generations')
       .select('*', { count: 'exact', head: true })
       .eq('user_id', user.id)
+      .eq('type', 'video')
       .gte('created_at', oneMinuteAgo)
 
     if (rateLimitError) {

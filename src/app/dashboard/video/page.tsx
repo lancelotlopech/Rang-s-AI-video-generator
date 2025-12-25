@@ -241,6 +241,41 @@ export default function VideoPage() {
     return () => clearInterval(interval)
   }, [])
 
+  // Load tasks from DB
+  useEffect(() => {
+    const fetchTasks = async () => {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+
+      const { data, error } = await supabase
+        .from('generations')
+        .select('*')
+        .eq('user_id', user.id)
+        .eq('type', 'video')
+        .order('created_at', { ascending: false })
+      
+      if (data) {
+        const mappedTasks: VideoTask[] = data.map(row => ({
+          id: row.id,
+          taskId: row.task_id,
+          prompt: row.prompt,
+          model: row.model || 'unknown',
+          aspectRatio: row.aspect_ratio || '16:9',
+          duration: row.duration || '5',
+          images: row.meta?.images,
+          status: row.status || 'pending',
+          videoUrl: row.video_url,
+          error: row.error_reason,
+          createdAt: new Date(row.created_at).getTime(),
+          finishedAt: row.status === 'completed' ? new Date(row.updated_at).getTime() : undefined,
+          progress: row.status === 'completed' ? 100 : 0
+        }))
+        setTasks(mappedTasks)
+      }
+    }
+    fetchTasks()
+  }, [supabase])
+
   // Polling Logic
   useEffect(() => {
     // 1. Progress Update Interval (Every 1s)
@@ -299,7 +334,7 @@ export default function VideoPage() {
             // Update DB if status changed
             if (t.status !== newStatus || t.videoUrl !== videoUrl) {
               supabase
-                .from('video_generations')
+                .from('generations')
                 .update({ 
                   status: newStatus, 
                   video_url: videoUrl, 
@@ -413,8 +448,34 @@ export default function VideoPage() {
       images = [images[0]]
     }
 
+    // 1. Insert into DB first
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+
+    const { data: insertedTask, error: insertError } = await supabase
+      .from('generations')
+      .insert({
+        user_id: user.id,
+        type: 'video',
+        prompt,
+        model: finalModel,
+        aspect_ratio: aspectRatio,
+        duration,
+        status: 'pending',
+        meta: { images: images.length > 0 ? images : undefined, resolution }
+      })
+      .select()
+      .single()
+
+    if (insertError) {
+      console.error("Failed to create DB task", insertError)
+      toast.error("Failed to initialize task: " + insertError.message)
+      setIsSubmitting(false)
+      return
+    }
+
     const newTask: VideoTask = {
-      id: crypto.randomUUID(),
+      id: insertedTask.id, // Use DB ID
       prompt,
       model: finalModel,
       aspectRatio,
@@ -450,28 +511,22 @@ export default function VideoPage() {
       }
 
       // Refresh credits after successful submission (pre-deducted)
-      const { data: profile } = await supabase.from('profiles').select('credits').eq('id', (await supabase.auth.getUser()).data.user?.id).single()
+      const { data: profile } = await supabase.from('profiles').select('credits').eq('id', user.id).single()
       if (profile) setCredits(profile.credits)
 
-      setTasks(prev => prev.map(t => {
-        if (t.id !== newTask.id) return t
-        if (data.id) {
-          return { 
-            ...t, 
-            status: data.status || 'processing', 
-            taskId: data.id,
-            lastResponse: data
-          }
-        } else {
-          return { 
-            ...t, 
-            status: 'failed', 
-            error: "Invalid response (no ID)", 
-            finishedAt: Date.now(),
-            lastResponse: data
-          }
-        }
-      }))
+      // Update DB with Task ID
+      if (data.id) {
+        await supabase
+          .from('generations')
+          .update({ task_id: data.id, status: data.status || 'processing' })
+          .eq('id', insertedTask.id)
+
+        setTasks(prev => prev.map(t => 
+          t.id === newTask.id ? { ...t, status: data.status || 'processing', taskId: data.id } : t
+        ))
+      } else {
+        throw new Error("Invalid response (no ID)")
+      }
 
       toast.info(t.messages.task_submitted)
 
@@ -479,6 +534,12 @@ export default function VideoPage() {
       console.error(err)
       const errMsg = typeof err === 'object' ? (err.message || JSON.stringify(err)) : String(err)
       
+      // Update DB as failed
+      await supabase
+        .from('generations')
+        .update({ status: 'failed', error_reason: errMsg })
+        .eq('id', insertedTask.id)
+
       setTasks(prev => prev.map(t => 
         t.id === newTask.id ? { ...t, status: 'failed', error: errMsg, finishedAt: Date.now() } : t
       ))
@@ -562,7 +623,7 @@ export default function VideoPage() {
     setTasks(prev => prev.filter(t => t.id !== id))
     if (previewTask?.id === id) setPreviewTask(null)
     
-    await supabase.from('video_generations').delete().eq('id', id)
+    await supabase.from('generations').delete().eq('id', id)
     toast.success("Record deleted")
   }
 
