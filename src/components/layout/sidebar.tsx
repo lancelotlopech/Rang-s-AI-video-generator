@@ -27,6 +27,8 @@ import {
 import { createClient } from "@/lib/supabase/client"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
+import { useLanguage } from "@/components/language-provider"
+import { translations } from "@/lib/i18n"
 
 interface SidebarProps extends React.HTMLAttributes<HTMLDivElement> {
   isCollapsed?: boolean
@@ -38,6 +40,8 @@ export function Sidebar({ className, isCollapsed = false, toggleCollapse }: Side
   const { theme, setTheme } = useTheme()
   const router = useRouter()
   const supabase = createClient()
+  const { language } = useLanguage()
+  const t = translations[language].nav
 
   const handleLogout = async () => {
     await supabase.auth.signOut()
@@ -47,13 +51,7 @@ export function Sidebar({ className, isCollapsed = false, toggleCollapse }: Side
 
   const routes = [
     // {
-    //   label: "Overview",
-    //   icon: LayoutDashboard,
-    //   href: "/dashboard",
-    //   color: "text-sky-500",
-    // },
-    // {
-    //   label: "Screenshot Studio",
+    //   label: t.screenshot_studio,
     //   icon: Smartphone,
     //   href: "/dashboard/screenshot",
     //   color: "text-violet-500",
@@ -65,31 +63,31 @@ export function Sidebar({ className, isCollapsed = false, toggleCollapse }: Side
     //   color: "text-indigo-500",
     // },
     // {
-    //   label: "Icon & Illustration",
+    //   label: t.icon_illustration,
     //   icon: Palette,
     //   href: "/dashboard/icon",
     //   color: "text-pink-700",
     // },
     {
-      label: "Video Generator",
+      label: t.ad_video,
       icon: Video,
       href: "/dashboard/video",
       color: "text-orange-700",
     },
     // {
-    //   label: "AI Chat Assistant",
+    //   label: t.ai_chat,
     //   icon: MessageSquare,
     //   href: "/dashboard/chat",
     //   color: "text-blue-500",
     // },
     // {
-    //   label: "My Gallery",
+    //   label: t.my_gallery,
     //   icon: ImageIcon,
     //   href: "/dashboard/gallery",
     //   color: "text-emerald-500",
     // },
     {
-      label: "Billing & Credits",
+      label: t.billing,
       icon: CreditCard,
       href: "/dashboard/billing",
       color: "text-gray-500",
@@ -144,13 +142,13 @@ export function Sidebar({ className, isCollapsed = false, toggleCollapse }: Side
             isCollapsed ? "justify-center px-2" : "justify-start"
           )}
           onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-          title={isCollapsed ? "Toggle Theme" : undefined}
+          title={isCollapsed ? t.theme : undefined}
         >
           <div className="relative h-5 w-5 shrink-0">
             <Sun className="absolute h-5 w-5 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
             <Moon className="absolute h-5 w-5 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
           </div>
-          {!isCollapsed && <span className="ml-2 whitespace-nowrap overflow-hidden">Theme</span>}
+          {!isCollapsed && <span className="ml-2 whitespace-nowrap overflow-hidden">{t.theme}</span>}
         </Button>
 
         {/* Logout */}
@@ -161,10 +159,10 @@ export function Sidebar({ className, isCollapsed = false, toggleCollapse }: Side
             isCollapsed ? "justify-center px-2" : "justify-start"
           )}
           onClick={handleLogout}
-          title={isCollapsed ? "Logout" : undefined}
+          title={isCollapsed ? t.logout : undefined}
         >
           <LogOut className="h-5 w-5 shrink-0" />
-          {!isCollapsed && <span className="ml-2 whitespace-nowrap overflow-hidden">Logout</span>}
+          {!isCollapsed && <span className="ml-2 whitespace-nowrap overflow-hidden">{t.logout}</span>}
         </Button>
 
         {/* Collapse Toggle */}
@@ -176,10 +174,10 @@ export function Sidebar({ className, isCollapsed = false, toggleCollapse }: Side
               isCollapsed ? "justify-center px-2" : "justify-start"
             )}
             onClick={toggleCollapse}
-            title={isCollapsed ? "Expand Sidebar" : undefined}
+            title={isCollapsed ? t.collapse : undefined}
           >
             {isCollapsed ? <PanelLeftOpen className="h-5 w-5 shrink-0" /> : <PanelLeftClose className="h-5 w-5 shrink-0" />}
-            {!isCollapsed && <span className="ml-2 whitespace-nowrap overflow-hidden">Collapse</span>}
+            {!isCollapsed && <span className="ml-2 whitespace-nowrap overflow-hidden">{t.collapse}</span>}
           </Button>
         )}
       </div>

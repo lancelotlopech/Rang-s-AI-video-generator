@@ -11,8 +11,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import Link from "next/link"
+import { useLanguage } from "@/components/language-provider"
+import { translations } from "@/lib/i18n"
 
 export default function LoginPage() {
+  const { language, t: translate } = useLanguage()
+  const t = translations[language].login
+  
   const [isLoading, setIsLoading] = useState(false)
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
@@ -42,13 +47,13 @@ export default function LoginPage() {
     e.preventDefault()
     
     if (!email || !password) {
-      toast.error("Please fill in all fields")
+      toast.error(t.fill_fields)
       return
     }
 
     if (isSignUp) {
       if (!strongPasswordRegex.test(password)) {
-        toast.error("Password must be at least 8 characters long and contain uppercase, lowercase, and special characters.")
+        toast.error(t.password_weak)
         return
       }
     }
@@ -65,14 +70,14 @@ export default function LoginPage() {
           },
         })
         if (error) throw error
-        toast.success("Check your email to confirm your account!")
+        toast.success(t.check_email)
       } else {
         const { error } = await supabase.auth.signInWithPassword({
           email,
           password,
         })
         if (error) throw error
-        toast.success("Logged in successfully!")
+        toast.success(t.login_success)
         window.location.href = "/dashboard/video"
       }
     } catch (error: any) {
@@ -97,9 +102,9 @@ export default function LoginPage() {
         <div className="relative z-20 mt-auto">
           <blockquote className="space-y-2">
             <p className="text-lg">
-              &ldquo;This AI video generator has completely transformed how we create ad content. It's fast, efficient, and the quality is incredible.&rdquo;
+              &ldquo;{t.hero_quote}&rdquo;
             </p>
-            <footer className="text-sm">Sofia Davis</footer>
+            <footer className="text-sm">{t.hero_author}</footer>
           </blockquote>
         </div>
       </div>
@@ -109,10 +114,10 @@ export default function LoginPage() {
         <div className="mx-auto flex w-full flex-col justify-center space-y-6 sm:w-[350px]">
           <div className="flex flex-col space-y-2 text-center">
             <h1 className="text-2xl font-semibold tracking-tight">
-              {isSignUp ? "Create an account" : "Welcome back"}
+              {isSignUp ? t.title_signup : t.title_signin}
             </h1>
             <p className="text-sm text-muted-foreground">
-              {isSignUp ? "Enter your email below to create your account" : "Enter your email below to sign in to your account"}
+              {isSignUp ? t.subtitle_signup : t.subtitle_signin}
             </p>
           </div>
 
@@ -120,7 +125,7 @@ export default function LoginPage() {
             <form onSubmit={handleEmailAuth}>
               <div className="grid gap-4">
                 <div className="grid gap-2">
-                  <Label htmlFor="email">Email</Label>
+                  <Label htmlFor="email">{t.email_label}</Label>
                   <Input
                     id="email"
                     placeholder="name@example.com"
@@ -134,10 +139,10 @@ export default function LoginPage() {
                   />
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor="password">Password</Label>
+                  <Label htmlFor="password">{t.password_label}</Label>
                   <Input
                     id="password"
-                    placeholder="••••••••"
+                    placeholder={t.password_placeholder}
                     type="password"
                     autoComplete={isSignUp ? "new-password" : "current-password"}
                     disabled={isLoading}
@@ -146,7 +151,7 @@ export default function LoginPage() {
                   />
                   {isSignUp && (
                     <p className="text-[10px] text-muted-foreground">
-                      Must contain 8+ chars, uppercase, lowercase, and symbol.
+                      {t.password_hint}
                     </p>
                   )}
                 </div>
@@ -154,7 +159,7 @@ export default function LoginPage() {
                   {isLoading && (
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   )}
-                  {isSignUp ? "Sign Up with Email" : "Sign In with Email"}
+                  {isSignUp ? t.btn_signup : t.btn_signin}
                 </Button>
               </div>
             </form>
@@ -165,7 +170,7 @@ export default function LoginPage() {
               </div>
               <div className="relative flex justify-center text-xs uppercase">
                 <span className="bg-background px-2 text-muted-foreground">
-                  Or continue with
+                  {t.or_continue}
                 </span>
               </div>
             </div>
@@ -176,29 +181,29 @@ export default function LoginPage() {
               ) : (
                 <Chrome className="mr-2 h-4 w-4" />
               )}
-              Google
+              {t.btn_google}
             </Button>
           </div>
 
           <p className="px-8 text-center text-sm text-muted-foreground">
             {isSignUp ? (
               <>
-                Already have an account?{" "}
+                {t.have_account}{" "}
                 <button
                   onClick={() => setIsSignUp(false)}
                   className="underline underline-offset-4 hover:text-primary"
                 >
-                  Sign In
+                  {t.link_signin}
                 </button>
               </>
             ) : (
               <>
-                Don't have an account?{" "}
+                {t.no_account}{" "}
                 <button
                   onClick={() => setIsSignUp(true)}
                   className="underline underline-offset-4 hover:text-primary"
                 >
-                  Sign Up
+                  {t.link_signup}
                 </button>
               </>
             )}

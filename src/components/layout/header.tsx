@@ -17,11 +17,13 @@ import { useLanguage } from "@/components/language-provider"
 import { createClient } from "@/lib/supabase/client"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
+import { translations } from "@/lib/i18n"
 
 export function Header() {
   const { language, setLanguage } = useLanguage()
   const supabase = createClient()
   const router = useRouter()
+  const t = translations[language].nav
   
   const [user, setUser] = useState<any>(null)
   const [credits, setCredits] = useState<number | null>(null)
@@ -99,7 +101,7 @@ export function Header() {
               <>
                 <Button variant="outline" size="sm" className="hidden md:flex bg-muted/50">
                   <CreditCard className="mr-2 h-4 w-4 text-orange-500" />
-                  <span>{credits !== null ? credits : '...'} Credits</span>
+                  <span>{credits !== null ? credits : '...'} {t.credits}</span>
                 </Button>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
@@ -126,19 +128,19 @@ export function Header() {
                     </DropdownMenuItem> */}
                     <DropdownMenuItem onClick={() => router.push('/dashboard/billing')}>
                       <CreditCard className="mr-2 h-4 w-4" />
-                      <span>Billing</span>
+                      <span>{t.billing}</span>
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem onClick={handleLogout} className="text-red-600 focus:text-red-600">
                       <LogOut className="mr-2 h-4 w-4" />
-                      <span>Log out</span>
+                      <span>{t.logout}</span>
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
               </>
             ) : (
               <Button size="sm" onClick={() => router.push('/login')}>
-                Login
+                {t.login}
               </Button>
             )}
           </div>

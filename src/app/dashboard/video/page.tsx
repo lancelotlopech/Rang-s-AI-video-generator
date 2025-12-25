@@ -101,18 +101,41 @@ export default function VideoPage() {
   // Tasks State
   const [tasks, setTasks] = useState<VideoTask[]>([])
   const [isLoaded, setIsLoaded] = useState(false)
+  const [dbModels, setDbModels] = useState<{ id: string; name: string; credits: number }[]>([])
 
-  // Load Models from Env
-  const videoModels = useMemo(() => {
+  // Load Models from Env (Fallback)
+  const envModels = useMemo(() => {
     try {
-      const envModels = process.env.NEXT_PUBLIC_VIDEO_MODELS
-      if (!envModels) return []
-      return JSON.parse(envModels) as { id: string; name: string; credits?: number }[]
+      const env = process.env.NEXT_PUBLIC_VIDEO_MODELS
+      if (!env) return []
+      return JSON.parse(env) as { id: string; name: string; credits?: number }[]
     } catch (e) {
       console.error("Failed to parse video models", e)
       return []
     }
   }, [])
+
+  // Fetch models from DB
+  useEffect(() => {
+    const fetchModels = async () => {
+      const { data, error } = await supabase
+        .from('video_models')
+        .select('*')
+        .eq('is_active', true)
+        .order('credits', { ascending: true })
+      
+      if (data && data.length > 0) {
+        setDbModels(data)
+        // If current selected model is not in the new list, select the first one
+        if (!data.find(m => m.id === selectedModel)) {
+          setSelectedModel(data[0].id)
+        }
+      }
+    }
+    fetchModels()
+  }, [supabase])
+
+  const videoModels = dbModels.length > 0 ? dbModels : envModels
 
   // Get current model cost
   const currentCost = useMemo(() => {
