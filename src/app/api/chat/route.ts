@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import OpenAI from "openai"
+import { createClient } from "@/lib/supabase/server"
 
 // 创建 OpenAI 客户端配置
 // 注意：这里每次请求都会重新读取环境变量，确保修改 .env 后能生效（在开发模式下）
@@ -20,6 +21,14 @@ const getOpenAIClient = () => {
 
 export async function POST(req: Request) {
   try {
+    // Auth check
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+
     const { messages, model: requestedModel } = await req.json()
 
     if (!messages) {

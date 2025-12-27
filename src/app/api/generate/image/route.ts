@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { fetchWithRetry } from "@/lib/api-client"
+import { isOpenAIConfigured } from "@/lib/env"
 
 export async function POST(req: Request) {
   try {
@@ -46,7 +48,7 @@ export async function POST(req: Request) {
     }
 
     // 模拟模式：如果没有配置 Key
-    if (!apiKey || apiKey === "your_token_here") {
+    if (!isOpenAIConfigured()) {
       console.log("[IMAGE_GENERATE] No API Key configured, returning mock image.")
       await new Promise((resolve) => setTimeout(resolve, 2000))
       
@@ -76,59 +78,35 @@ export async function POST(req: Request) {
 
     console.log(`[IMAGE_GENERATE] Requesting: ${apiUrl} with model: ${model || "dall-e-3"}`)
 
-    let response
-    let lastError
-    const MAX_RETRIES = 3
+    const response = await fetchWithRetry(apiUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: model || "dall-e-3",
+        prompt: prompt,
+        n: 1,
+        size: size,
+        quality: "standard",
+      }),
+      maxRetries: 3,
+      retryDelay: 2000,
+    })
 
-    for (let i = 0; i < MAX_RETRIES; i++) {
-      try {
-        if (i > 0) {
-          console.log(`[IMAGE_GENERATE] Retry attempt ${i + 1}/${MAX_RETRIES}...`)
-          await new Promise(resolve => setTimeout(resolve, 2000)) // 等待 2 秒
-        }
-
-        response = await fetch(apiUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
-            model: model || "dall-e-3",
-            prompt: prompt,
-            n: 1,
-            size: size,
-            quality: "standard",
-          }),
-        })
-
-        if (response.ok) break // 成功则跳出循环
-
-        const errorData = await response.text()
-        lastError = errorData
-        
-        // 只有 429 (Too Many Requests) 或 5xx 才重试
-        if (response.status !== 429 && response.status < 500) {
-          console.error("[IMAGE_GENERATE_API_ERROR]", response.status, errorData)
-          break; // 不重试客户端错误
-        }
-
-        console.warn(`[IMAGE_GENERATE_API_WARN] ${response.status} - ${errorData}`)
-      } catch (e) {
-        console.error(`[IMAGE_GENERATE_NETWORK_ERROR] Attempt ${i + 1} failed:`, e)
-        lastError = String(e)
-      }
-    }
-
-    if (!response || !response.ok) {
-       // Update DB with Error
-       if (record) {
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error("[IMAGE_GENERATE_API_ERROR]", response.status, errorText)
+      
+      // Update DB with Error
+      if (record) {
         await supabase.from('generations').update({
           status: 'failed',
-          error_reason: lastError || 'Unknown Error'
+          error_reason: errorText || 'Unknown Error'
         }).eq('id', record.id)
       }
-      return new NextResponse(`API Error: Max retries reached. Last error: ${lastError}`, { status: 500 })
+      return new NextResponse(`API Error: ${errorText}`, { status: response.status })
     }
 
     const data = await response.json()
@@ -158,7 +136,7 @@ export async function POST(req: Request) {
       url: imageUrl,
     })
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("[IMAGE_GENERATE_INTERNAL_ERROR]", error)
     return new NextResponse("Internal Server Error", { status: 500 })
   }

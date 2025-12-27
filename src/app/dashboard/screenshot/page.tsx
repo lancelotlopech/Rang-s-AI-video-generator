@@ -11,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Smartphone, Download, Loader2, Upload, CheckCircle2, ArrowRight, Image as ImageIcon } from "lucide-react"
+import { Smartphone, Download, Loader2, Upload, ArrowRight, Image as ImageIcon } from "lucide-react"
 import { toast } from "sonner"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -71,7 +71,7 @@ export default function ScreenshotPage() {
     }
   }, [])
 
-  const selectedModel = models.find((m) => m.id === selectedModelId)
+  const _selectedModel = models.find((m) => m.id === selectedModelId)
 
   const onSubmit = async () => {
     if (!prompt) {
@@ -139,9 +139,10 @@ export default function ScreenshotPage() {
         toast.warning(t("screenshot.messages.enhance_failed"))
       }
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error(error)
-      toast.error(error.message || t("screenshot.messages.error_generic"))
+      const errorMessage = error instanceof Error ? error.message : t("screenshot.messages.error_generic")
+      toast.error(errorMessage)
     } finally {
       setIsLoading(false)
       setGenerationStep('idle')

@@ -1,10 +1,11 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { SupabaseClient } from '@supabase/supabase-js'
 
 // Allow streaming responses up to 60 seconds
 export const maxDuration = 60
 
-async function getEndpoints(supabase: any) {
+async function getEndpoints(supabase: SupabaseClient) {
   // 1. Try to get from DB first
   let apiKey = null
   try {
@@ -14,7 +15,7 @@ async function getEndpoints(supabase: any) {
       .eq('key', 'YUNWU_API_KEY')
       .single()
     if (data) apiKey = data.value
-  } catch (e) {
+  } catch {
     // Ignore DB error, fallback to env
   }
 
@@ -46,7 +47,7 @@ function getModelCost(modelId: string): number {
     const models = JSON.parse(envModels) as { id: string; credits: number }[]
     const model = models.find(m => m.id === modelId)
     return model?.credits || 0
-  } catch (e) {
+  } catch {
     return 0
   }
 }
@@ -71,24 +72,6 @@ export async function POST(req: Request) {
       )
     }
 
-    // 0. Rate Limit Check (2 requests per minute)
-    const oneMinuteAgo = new Date(Date.now() - 60 * 1000).toISOString()
-    const { count, error: rateLimitError } = await supabase
-      .from('generations')
-      .select('*', { count: 'exact', head: true })
-      .eq('user_id', user.id)
-      .eq('type', 'video')
-      .gte('created_at', oneMinuteAgo)
-
-    if (rateLimitError) {
-      console.error('Rate limit check failed:', rateLimitError)
-    } else if (count !== null && count >= 2) {
-      return NextResponse.json(
-        { error: 'Rate limit exceeded', details: 'You can only generate 2 videos per minute.' },
-        { status: 429 }
-      )
-    }
-
     // 1. Check Credits & Deduct (using RPC for safety)
     const cost = getModelCost(model)
     
@@ -109,7 +92,7 @@ export async function POST(req: Request) {
     // Note: Frontend now handles the initial DB insertion.
     // We trust the frontend to update it with the Task ID.
 
-    let payload: any = {}
+    let payload: Record<string, unknown> = {}
 
     // Handle Sora Models
     if (model && model.startsWith('sora')) {
@@ -162,8 +145,8 @@ export async function POST(req: Request) {
 
     // Debug payload structure (without full base64)
     const debugPayload = { ...payload }
-    if (debugPayload.images) {
-      debugPayload.images = debugPayload.images.map((img: string) => 
+    if (Array.isArray(debugPayload.images)) {
+      debugPayload.images = (debugPayload.images as string[]).map((img: string) => 
         img.startsWith('data:') ? `${img.substring(0, 30)}...[base64]` : img
       )
     }
@@ -208,18 +191,14 @@ export async function POST(req: Request) {
     // Yunwu API returns { id: "...", status: "pending", ... }
     return NextResponse.json(data)
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('[Video API] Internal Error:', error)
     // Try to refund if possible (might fail if DB is down)
-    try {
-      const supabase = await createClient()
-      // We don't know cost here easily unless we parse body again, but let's assume we can't refund easily if we crashed before cost calc
-      // If we crashed after deduction, we should try to refund.
-      // For simplicity, we skip complex refund logic on crash for now.
-    } catch (e) {}
+    // For simplicity, we skip complex refund logic on crash for now.
 
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error'
     return NextResponse.json(
-      { error: 'Internal Server Error', details: error.message },
+      { error: 'Internal Server Error', details: errorMessage },
       { status: 500 }
     )
   }
@@ -265,10 +244,11 @@ export async function GET(req: Request) {
 
     return NextResponse.json(data)
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('[Video API] Poll Internal Error:', error)
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error'
     return NextResponse.json(
-      { error: 'Internal Server Error', details: error.message },
+      { error: 'Internal Server Error', details: errorMessage },
       { status: 500 }
     )
   }
