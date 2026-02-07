@@ -1,12 +1,41 @@
 import { NextResponse } from "next/server"
+import { createClient } from "@/lib/supabase/server"
+import { fetchWithRetry } from "@/lib/api-client"
+import { isOpenAIConfigured } from "@/lib/env"
 
 export async function POST(req: Request) {
   try {
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+
     // DALL-E 3 默认使用竖屏 1024x1792 以适配手机
     const { prompt, model, size = "1024x1792" } = await req.json()
 
     if (!prompt) {
       return new NextResponse("Prompt is required", { status: 400 })
+    }
+
+    // 1. Log Start (Pending)
+    const { data: record, error: dbError } = await supabase
+      .from('generations')
+      .insert({
+        user_id: user.id,
+        type: 'image',
+        model: model || "dall-e-3",
+        prompt: prompt,
+        status: 'processing',
+        meta: { size, provider: 'openai' }
+      })
+      .select()
+      .single()
+
+    if (dbError) {
+      console.error("[IMAGE_GENERATE] DB Error:", dbError)
+      // Continue anyway? Or fail? Better to fail if we want to ensure logging.
     }
 
     const apiKey = process.env.OPENAI_API_KEY
@@ -19,11 +48,23 @@ export async function POST(req: Request) {
     }
 
     // 模拟模式：如果没有配置 Key
-    if (!apiKey || apiKey === "your_token_here") {
+    if (!isOpenAIConfigured()) {
       console.log("[IMAGE_GENERATE] No API Key configured, returning mock image.")
       await new Promise((resolve) => setTimeout(resolve, 2000))
+      
+      const mockUrl = "https://images.unsplash.com/photo-1611162617474-5b21e879e113?q=80&w=1000&auto=format&fit=crop"
+      
+      // Update DB
+      if (record) {
+        await supabase.from('generations').update({
+          status: 'success',
+          url: mockUrl,
+          meta: { ...record.meta, mock: true }
+        }).eq('id', record.id)
+      }
+
       return NextResponse.json({
-        url: "https://images.unsplash.com/photo-1611162617474-5b21e879e113?q=80&w=1000&auto=format&fit=crop",
+        url: mockUrl,
         mock: true
       })
     }
@@ -37,66 +78,65 @@ export async function POST(req: Request) {
 
     console.log(`[IMAGE_GENERATE] Requesting: ${apiUrl} with model: ${model || "dall-e-3"}`)
 
-    let response
-    let lastError
-    const MAX_RETRIES = 3
+    const response = await fetchWithRetry(apiUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: model || "dall-e-3",
+        prompt: prompt,
+        n: 1,
+        size: size,
+        quality: "standard",
+      }),
+      maxRetries: 3,
+      retryDelay: 2000,
+    })
 
-    for (let i = 0; i < MAX_RETRIES; i++) {
-      try {
-        if (i > 0) {
-          console.log(`[IMAGE_GENERATE] Retry attempt ${i + 1}/${MAX_RETRIES}...`)
-          await new Promise(resolve => setTimeout(resolve, 2000)) // 等待 2 秒
-        }
-
-        response = await fetch(apiUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
-            model: model || "dall-e-3",
-            prompt: prompt,
-            n: 1,
-            size: size,
-            quality: "standard",
-          }),
-        })
-
-        if (response.ok) break // 成功则跳出循环
-
-        const errorData = await response.text()
-        lastError = errorData
-        
-        // 只有 429 (Too Many Requests) 或 5xx 才重试
-        if (response.status !== 429 && response.status < 500) {
-          console.error("[IMAGE_GENERATE_API_ERROR]", response.status, errorData)
-          return new NextResponse(`API Error: ${response.status} - ${errorData}`, { status: response.status })
-        }
-
-        console.warn(`[IMAGE_GENERATE_API_WARN] ${response.status} - ${errorData}`)
-      } catch (e) {
-        console.error(`[IMAGE_GENERATE_NETWORK_ERROR] Attempt ${i + 1} failed:`, e)
-        lastError = String(e)
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error("[IMAGE_GENERATE_API_ERROR]", response.status, errorText)
+      
+      // Update DB with Error
+      if (record) {
+        await supabase.from('generations').update({
+          status: 'failed',
+          error_reason: errorText || 'Unknown Error'
+        }).eq('id', record.id)
       }
-    }
-
-    if (!response || !response.ok) {
-      return new NextResponse(`API Error: Max retries reached. Last error: ${lastError}`, { status: 500 })
+      return new NextResponse(`API Error: ${errorText}`, { status: response.status })
     }
 
     const data = await response.json()
 
     if (!data.data || !data.data[0] || !data.data[0].url) {
       console.error("[IMAGE_GENERATE_FORMAT_ERROR]", data)
+      if (record) {
+        await supabase.from('generations').update({
+          status: 'failed',
+          error_reason: 'Invalid API Response Format'
+        }).eq('id', record.id)
+      }
       return new NextResponse("Invalid API response format", { status: 500 })
     }
 
+    const imageUrl = data.data[0].url
+
+    // Update DB Success
+    if (record) {
+      await supabase.from('generations').update({
+        status: 'success',
+        url: imageUrl
+      }).eq('id', record.id)
+    }
+
     return NextResponse.json({
-      url: data.data[0].url,
+      url: imageUrl,
     })
 
-  } catch (error) {
+  } catch (error: unknown) {
     console.error("[IMAGE_GENERATE_INTERNAL_ERROR]", error)
     return new NextResponse("Internal Server Error", { status: 500 })
   }

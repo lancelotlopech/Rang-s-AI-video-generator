@@ -12,7 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { 
   Download, Upload, Trash2, Type, Palette, Image as ImageIcon, 
-  Smartphone, Wand2, Check, Square, 
+  Smartphone, Wand2, Square, 
   Save, FolderOpen, Clock, X, Plus, Maximize2, Copy,
   ChevronDown, ChevronUp, Dices, Undo2, Redo2
 } from "lucide-react"
@@ -27,7 +27,7 @@ import { CanvasPreview } from "@/components/studio/canvas-preview"
 export default function StudioPage() {
   // Store
   const store = useStudioStore()
-  const { undo, redo, pastStates, futureStates } = useStudioStore.temporal.getState()
+  const { undo, redo } = useStudioStore.temporal.getState()
   const activePage = store.pages.find(p => p.id === store.activePageId) || store.pages[0]
   
   // Subscribe to temporal state changes for UI updates

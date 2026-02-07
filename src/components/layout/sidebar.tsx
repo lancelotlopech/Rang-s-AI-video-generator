@@ -23,6 +23,7 @@ import {
   Sun,
   Moon,
   LogOut,
+  Sparkles,
 } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 import { useRouter } from "next/navigation"
@@ -49,50 +50,78 @@ export function Sidebar({ className, isCollapsed = false, toggleCollapse }: Side
     toast.success("Logged out successfully")
   }
 
-  const routes = [
-    // {
-    //   label: t.screenshot_studio,
-    //   icon: Smartphone,
-    //   href: "/dashboard/screenshot",
-    //   color: "text-violet-500",
-    // },
-    // {
-    //   label: "App Store Studio",
-    //   icon: Smartphone,
-    //   href: "/dashboard/studio",
-    //   color: "text-indigo-500",
-    // },
-    // {
-    //   label: t.icon_illustration,
-    //   icon: Palette,
-    //   href: "/dashboard/icon",
-    //   color: "text-pink-700",
-    // },
+  // Feature flags - set to true to enable routes
+  const FEATURES = {
+    screenshot: true,
+    studio: true,
+    icon: true,
+    video: true,
+    videoToPrompt: true,
+    chat: true,
+    gallery: true,
+    billing: true,
+  }
+
+  const allRoutes = [
     {
+      key: 'screenshot',
+      label: t.screenshot_studio,
+      icon: Smartphone,
+      href: "/dashboard/screenshot",
+      color: "text-violet-500",
+    },
+    {
+      key: 'studio',
+      label: "App Store Studio",
+      icon: Smartphone,
+      href: "/dashboard/studio",
+      color: "text-indigo-500",
+    },
+    {
+      key: 'icon',
+      label: t.icon_illustration,
+      icon: Palette,
+      href: "/dashboard/icon",
+      color: "text-pink-700",
+    },
+    {
+      key: 'video',
       label: t.ad_video,
       icon: Video,
       href: "/dashboard/video",
       color: "text-orange-700",
     },
-    // {
-    //   label: t.ai_chat,
-    //   icon: MessageSquare,
-    //   href: "/dashboard/chat",
-    //   color: "text-blue-500",
-    // },
-    // {
-    //   label: t.my_gallery,
-    //   icon: ImageIcon,
-    //   href: "/dashboard/gallery",
-    //   color: "text-emerald-500",
-    // },
     {
+      key: 'videoToPrompt',
+      label: "Video to Prompt",
+      icon: Sparkles,
+      href: "/dashboard/video-to-prompt",
+      color: "text-purple-500",
+    },
+    {
+      key: 'chat',
+      label: t.ai_chat,
+      icon: MessageSquare,
+      href: "/dashboard/chat",
+      color: "text-blue-500",
+    },
+    {
+      key: 'gallery',
+      label: t.my_gallery,
+      icon: ImageIcon,
+      href: "/dashboard/gallery",
+      color: "text-emerald-500",
+    },
+    {
+      key: 'billing',
       label: t.billing,
       icon: CreditCard,
       href: "/dashboard/billing",
       color: "text-gray-500",
     },
   ]
+
+  const routes = allRoutes.filter(route => FEATURES[route.key as keyof typeof FEATURES])
 
   return (
     <div className={cn("flex flex-col h-full bg-card border-r", className)}>

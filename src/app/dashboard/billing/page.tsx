@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
-import { Check, CreditCard, Zap } from "lucide-react"
+import { Check, Zap } from "lucide-react"
 
 export default function BillingPage() {
   return (

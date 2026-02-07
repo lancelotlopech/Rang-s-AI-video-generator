@@ -12,7 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Video, Loader2, Download, Play, AlertCircle, Clock, CheckCircle2, XCircle, Trash2, Image as ImageIcon, Terminal, ChevronDown, ChevronUp, UploadCloud, Sparkles, LayoutGrid, List as ListIcon, RefreshCw, Maximize2, Info, Eye, AlertTriangle, Coins } from "lucide-react"
+import { Video, Loader2, Download, Play, AlertCircle, Clock, CheckCircle2, XCircle, Trash2, Image as ImageIcon, Terminal, ChevronDown, ChevronUp, UploadCloud, Sparkles, LayoutGrid, List as ListIcon, RefreshCw, Maximize2, Info, Eye, AlertTriangle, Coins, Wand2, Copy } from "lucide-react"
 import { toast } from "sonner"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Progress } from "@/components/ui/progress"
@@ -30,6 +30,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { createClient } from "@/lib/supabase/client"
 import { useRouter } from "next/navigation"
+import { PromptEnhancer, VideoStyleTemplate } from "@/components/video/prompt-enhancer"
 
 interface VideoTask {
   id: string // Local UUID
@@ -46,6 +47,8 @@ interface VideoTask {
   finishedAt?: number
   progress: number // Fake progress 0-90
   lastResponse?: any // Debug info
+  // Style template for "generate similar" feature
+  styleTemplate?: VideoStyleTemplate
 }
 
 const getFriendlyErrorMessage = (error?: string) => {
@@ -96,6 +99,8 @@ export default function VideoPage() {
   const [previewTask, setPreviewTask] = useState<VideoTask | null>(null)
   const [previewImage, setPreviewImage] = useState<string | null>(null) // For ref image preview
   const [showRulesDialog, setShowRulesDialog] = useState(false)
+  const [showPromptEnhancer, setShowPromptEnhancer] = useState(false)
+  const [currentStyleTemplate, setCurrentStyleTemplate] = useState<VideoStyleTemplate | null>(null) // Style template from AI enhancer
   const promptInputRef = useRef<HTMLTextAreaElement>(null)
 
   // Tasks State
@@ -186,6 +191,17 @@ export default function VideoPage() {
       }
     }
     setIsLoaded(true)
+
+    // Check for prompt from Video to Prompt page
+    const promptFromAnalysis = sessionStorage.getItem('video_prompt_from_analysis')
+    if (promptFromAnalysis) {
+      setPrompt(promptFromAnalysis)
+      sessionStorage.removeItem('video_prompt_from_analysis')
+      toast.success("已加载分析生成的 Prompt")
+      setTimeout(() => {
+        promptInputRef.current?.focus()
+      }, 100)
+    }
   }, [])
 
   // Save tasks to LocalStorage
@@ -240,6 +256,43 @@ export default function VideoPage() {
     const interval = setInterval(checkExpiration, 60 * 1000) // Check every minute
     return () => clearInterval(interval)
   }, [])
+
+  // Load tasks from DB
+  useEffect(() => {
+    const fetchTasks = async () => {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+
+      const { data, error } = await supabase
+        .from('generations')
+        .select('*')
+        .eq('user_id', user.id)
+        .eq('type', 'video')
+        .order('created_at', { ascending: false })
+      
+      if (data) {
+        const mappedTasks: VideoTask[] = data.map(row => ({
+          id: row.id,
+          taskId: row.task_id,
+          prompt: row.prompt,
+          model: row.model || 'unknown',
+          aspectRatio: row.aspect_ratio || '16:9',
+          duration: row.duration || '5',
+          images: row.meta?.images,
+          status: row.status || 'pending',
+          videoUrl: row.video_url,
+          error: row.error_reason,
+          createdAt: new Date(row.created_at).getTime(),
+          finishedAt: row.status === 'completed' ? new Date(row.updated_at).getTime() : undefined,
+          progress: row.status === 'completed' ? 100 : 0,
+          // Load style template from meta
+          styleTemplate: row.meta?.styleTemplate
+        }))
+        setTasks(mappedTasks)
+      }
+    }
+    fetchTasks()
+  }, [supabase])
 
   // Polling Logic
   useEffect(() => {
@@ -299,7 +352,7 @@ export default function VideoPage() {
             // Update DB if status changed
             if (t.status !== newStatus || t.videoUrl !== videoUrl) {
               supabase
-                .from('video_generations')
+                .from('generations')
                 .update({ 
                   status: newStatus, 
                   video_url: videoUrl, 
@@ -413,8 +466,39 @@ export default function VideoPage() {
       images = [images[0]]
     }
 
+    // 1. Insert into DB first
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+
+    const { data: insertedTask, error: insertError } = await supabase
+      .from('generations')
+      .insert({
+        user_id: user.id,
+        type: 'video',
+        prompt,
+        model: finalModel,
+        aspect_ratio: aspectRatio,
+        duration,
+        status: 'pending',
+        meta: { 
+          images: images.length > 0 ? images : undefined, 
+          resolution,
+          // Save style template if available (from AI enhancer)
+          styleTemplate: currentStyleTemplate || undefined
+        }
+      })
+      .select()
+      .single()
+
+    if (insertError) {
+      console.error("Failed to create DB task", insertError)
+      toast.error("Failed to initialize task: " + insertError.message)
+      setIsSubmitting(false)
+      return
+    }
+
     const newTask: VideoTask = {
-      id: crypto.randomUUID(),
+      id: insertedTask.id, // Use DB ID
       prompt,
       model: finalModel,
       aspectRatio,
@@ -450,28 +534,22 @@ export default function VideoPage() {
       }
 
       // Refresh credits after successful submission (pre-deducted)
-      const { data: profile } = await supabase.from('profiles').select('credits').eq('id', (await supabase.auth.getUser()).data.user?.id).single()
+      const { data: profile } = await supabase.from('profiles').select('credits').eq('id', user.id).single()
       if (profile) setCredits(profile.credits)
 
-      setTasks(prev => prev.map(t => {
-        if (t.id !== newTask.id) return t
-        if (data.id) {
-          return { 
-            ...t, 
-            status: data.status || 'processing', 
-            taskId: data.id,
-            lastResponse: data
-          }
-        } else {
-          return { 
-            ...t, 
-            status: 'failed', 
-            error: "Invalid response (no ID)", 
-            finishedAt: Date.now(),
-            lastResponse: data
-          }
-        }
-      }))
+      // Update DB with Task ID
+      if (data.id) {
+        await supabase
+          .from('generations')
+          .update({ task_id: data.id, status: data.status || 'processing' })
+          .eq('id', insertedTask.id)
+
+        setTasks(prev => prev.map(t => 
+          t.id === newTask.id ? { ...t, status: data.status || 'processing', taskId: data.id } : t
+        ))
+      } else {
+        throw new Error("Invalid response (no ID)")
+      }
 
       toast.info(t.messages.task_submitted)
 
@@ -479,6 +557,12 @@ export default function VideoPage() {
       console.error(err)
       const errMsg = typeof err === 'object' ? (err.message || JSON.stringify(err)) : String(err)
       
+      // Update DB as failed
+      await supabase
+        .from('generations')
+        .update({ status: 'failed', error_reason: errMsg })
+        .eq('id', insertedTask.id)
+
       setTasks(prev => prev.map(t => 
         t.id === newTask.id ? { ...t, status: 'failed', error: errMsg, finishedAt: Date.now() } : t
       ))
@@ -558,11 +642,52 @@ export default function VideoPage() {
     }
   }
 
+  // Generate similar video using saved style template
+  const handleGenerateSimilar = (task: VideoTask) => {
+    if (!task.styleTemplate) {
+      toast.error("此视频没有保存风格模板，无法生成同款")
+      return
+    }
+
+    setPreviewTask(null) // Close dialog
+
+    // Load style template settings
+    const template = task.styleTemplate
+
+    // Set model and other parameters from the original task
+    setSelectedModel(task.model)
+    setAspectRatio(task.aspectRatio)
+    setDuration(task.duration || "10")
+    
+    // Load reference images if available
+    if (task.images && task.images.length > 0) {
+      setUploadedImages(task.images)
+    }
+
+    // Set the style template for the new generation
+    setCurrentStyleTemplate(template)
+
+    // Set prompt with style hint
+    const styleHint = template.sceneType 
+      ? `[${template.sceneType}风格] ` 
+      : ""
+    setPrompt(styleHint + "在这里输入新的内容描述...")
+
+    // Scroll to top
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+
+    setTimeout(() => {
+      promptInputRef.current?.focus()
+      promptInputRef.current?.select()
+      toast.success("已加载风格模板！请输入新的内容描述，保持相同风格生成新视频。")
+    }, 500)
+  }
+
   const handleDelete = async (id: string) => {
     setTasks(prev => prev.filter(t => t.id !== id))
     if (previewTask?.id === id) setPreviewTask(null)
     
-    await supabase.from('video_generations').delete().eq('id', id)
+    await supabase.from('generations').delete().eq('id', id)
     toast.success("Record deleted")
   }
 
@@ -736,6 +861,17 @@ export default function VideoPage() {
             </div>
 
             <div className="flex-1" />
+
+            {/* AI Prompt Enhancer Button */}
+            <Button 
+              variant="outline"
+              className="h-10 px-4 border-purple-300 text-purple-600 hover:bg-purple-50 hover:text-purple-700 hover:border-purple-400"
+              onClick={() => setShowPromptEnhancer(true)}
+              disabled={!prompt.trim() || isSubmitting}
+            >
+              <Wand2 className="mr-2 h-4 w-4" />
+              AI 优化
+            </Button>
 
             <Button 
               className="bg-orange-600 hover:bg-orange-700 h-10 px-8 text-base shadow-lg shadow-orange-900/20 font-semibold"
@@ -961,8 +1097,33 @@ export default function VideoPage() {
                           Extend
                         </Button>
                       </div>
+                      
+                      {/* Generate Similar Button */}
+                      {previewTask.styleTemplate && (
+                        <Button 
+                          variant="outline" 
+                          className="w-full border-purple-300 text-purple-600 hover:bg-purple-50 hover:text-purple-700 hover:border-purple-400"
+                          onClick={() => handleGenerateSimilar(previewTask)}
+                        >
+                          <Copy className="w-4 h-4 mr-2" />
+                          生成同款
+                        </Button>
+                      )}
                     </div>
                   )}
+                  
+                  {/* Show Generate Similar even if video expired, as long as style template exists */}
+                  {previewTask.status === 'expired' && previewTask.styleTemplate && (
+                    <Button 
+                      variant="outline" 
+                      className="w-full border-purple-300 text-purple-600 hover:bg-purple-50 hover:text-purple-700 hover:border-purple-400"
+                      onClick={() => handleGenerateSimilar(previewTask)}
+                    >
+                      <Copy className="w-4 h-4 mr-2" />
+                      生成同款
+                    </Button>
+                  )}
+                  
                   <Button 
                     variant="ghost" 
                     className="w-full text-red-500 hover:text-red-600 hover:bg-red-50"
@@ -1019,6 +1180,22 @@ export default function VideoPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Prompt Enhancer Dialog */}
+      <PromptEnhancer
+        open={showPromptEnhancer}
+        onOpenChange={setShowPromptEnhancer}
+        userPrompt={prompt}
+        referenceImages={uploadedImages}
+        targetModel={selectedModel}
+        onApplyPrompt={(enhancedPrompt, styleTemplate) => {
+          setPrompt(enhancedPrompt)
+          setCurrentStyleTemplate(styleTemplate || null)
+          if (styleTemplate) {
+            toast.success("已保存风格模板，生成后可用于「生成同款」")
+          }
+        }}
+      />
     </div>
   )
 }
