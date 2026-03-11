@@ -10,6 +10,7 @@ export const translations = {
     },
     nav: {
       screenshot_studio: "Screenshot Studio",
+      app_store_studio: "App Store Studio",
       icon_illustration: "Icon & Illustration",
       ad_video: "Ad Video Generator",
       ai_chat: "AI Chat Assistant",
@@ -166,6 +167,7 @@ export const translations = {
     },
     nav: {
       screenshot_studio: "截图工坊",
+      app_store_studio: "商店素材工坊",
       icon_illustration: "图标与插画",
       ad_video: "广告视频生成",
       ai_chat: "AI 助手",

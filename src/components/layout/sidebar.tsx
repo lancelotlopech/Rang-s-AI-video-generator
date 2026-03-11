@@ -50,42 +50,36 @@ export function Sidebar({ className, isCollapsed = false, toggleCollapse }: Side
   }
 
   const routes = [
-    // {
-    //   label: t.screenshot_studio,
-    //   icon: Smartphone,
-    //   href: "/dashboard/screenshot",
-    //   color: "text-violet-500",
-    // },
-    // {
-    //   label: "App Store Studio",
-    //   icon: Smartphone,
-    //   href: "/dashboard/studio",
-    //   color: "text-indigo-500",
-    // },
-    // {
-    //   label: t.icon_illustration,
-    //   icon: Palette,
-    //   href: "/dashboard/icon",
-    //   color: "text-pink-700",
-    // },
+    {
+      label: t.screenshot_studio,
+      icon: Smartphone,
+      href: "/dashboard/screenshot",
+      color: "text-violet-500",
+    },
+    {
+      label: t.app_store_studio,
+      icon: LayoutDashboard,
+      href: "/dashboard/studio",
+      color: "text-indigo-500",
+    },
+    {
+      label: t.icon_illustration,
+      icon: Palette,
+      href: "/dashboard/icon",
+      color: "text-pink-700",
+    },
     {
       label: t.ad_video,
       icon: Video,
       href: "/dashboard/video",
       color: "text-orange-700",
     },
-    // {
-    //   label: t.ai_chat,
-    //   icon: MessageSquare,
-    //   href: "/dashboard/chat",
-    //   color: "text-blue-500",
-    // },
-    // {
-    //   label: t.my_gallery,
-    //   icon: ImageIcon,
-    //   href: "/dashboard/gallery",
-    //   color: "text-emerald-500",
-    // },
+    {
+      label: t.ai_chat,
+      icon: MessageSquare,
+      href: "/dashboard/chat",
+      color: "text-blue-500",
+    },
     {
       label: t.billing,
       icon: CreditCard,
