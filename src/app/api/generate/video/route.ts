@@ -1,10 +1,34 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import type { SupabaseClient } from '@supabase/supabase-js'
 
 // Allow streaming responses up to 60 seconds
 export const maxDuration = 60
 
-async function getEndpoints(supabase: any) {
+type JsonRecord = Record<string, unknown>
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function getRecord(value: unknown): JsonRecord | null {
+  return value && typeof value === 'object' ? value as JsonRecord : null
+}
+
+function getString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null
+}
+
+function getNestedRecord(source: JsonRecord, key: string): JsonRecord | null {
+  return getRecord(source[key])
+}
+
+function getArrayItemRecord(source: JsonRecord, key: string, index: number): JsonRecord | null {
+  const value = source[key]
+  return Array.isArray(value) ? getRecord(value[index]) : null
+}
+
+async function getEndpoints(supabase: SupabaseClient) {
   // 1. Try to get from DB first
   let apiKey = null
   try {
@@ -14,7 +38,7 @@ async function getEndpoints(supabase: any) {
       .eq('key', 'YUNWU_API_KEY')
       .single()
     if (data) apiKey = data.value
-  } catch (e) {
+  } catch {
     // Ignore DB error, fallback to env
   }
 
@@ -35,19 +59,140 @@ async function getEndpoints(supabase: any) {
     queryEndpoint = 'https://yunwu.ai/v1/video/query'
   }
 
-  return { apiKey, createEndpoint, queryEndpoint }
+  const baseUrl = (process.env.YUNWU_BASE_URL || 'https://yunwu.ai/v1').replace(/\/+$/, '')
+
+  return { apiKey, createEndpoint, queryEndpoint, baseUrl }
 }
 
 // Helper to get cost
-function getModelCost(modelId: string): number {
+async function getModelCost(supabase: SupabaseClient, modelId: string): Promise<number> {
+  try {
+    const { data } = await supabase
+      .from('video_models')
+      .select('credits')
+      .eq('id', modelId)
+      .eq('is_active', true)
+      .maybeSingle()
+
+    if (typeof data?.credits === 'number') {
+      return data.credits
+    }
+  } catch (error) {
+    console.warn('[Video API] Failed to read model cost from DB, falling back to env:', error)
+  }
+
   try {
     const envModels = process.env.NEXT_PUBLIC_VIDEO_MODELS
     if (!envModels) return 0
     const models = JSON.parse(envModels) as { id: string; credits: number }[]
     const model = models.find(m => m.id === modelId)
     return model?.credits || 0
-  } catch (e) {
+  } catch {
     return 0
+  }
+}
+
+function isKlingModel(modelId: string): boolean {
+  return modelId.toLowerCase().includes('kling')
+}
+
+function tryParseJson(value: string): JsonRecord | null {
+  try {
+    return getRecord(JSON.parse(value))
+  } catch {
+    const match = value.match(/\{[\s\S]*\}/)
+    if (!match) return null
+
+    try {
+      return getRecord(JSON.parse(match[0]))
+    } catch {
+      return null
+    }
+  }
+}
+
+function normalizeKlingCreateResponse(data: unknown) {
+  const response = getRecord(data) || {}
+  const firstChoice = getArrayItemRecord(response, 'choices', 0)
+  const message = firstChoice ? getNestedRecord(firstChoice, 'message') : null
+  const content = message ? getString(message.content) : null
+  const parsedContent = typeof content === 'string' ? tryParseJson(content) : null
+  const source = parsedContent || response
+  const dataRecord = getNestedRecord(source, 'data')
+  const firstDataRecord = getArrayItemRecord(source, 'data', 0)
+
+  const directVideoUrl =
+    getString(source.video_url) ||
+    getString(source.videoUrl) ||
+    getString(source.url) ||
+    (dataRecord && (
+      getString(dataRecord.video_url) ||
+      getString(dataRecord.videoUrl) ||
+      getString(dataRecord.url)
+    )) ||
+    (firstDataRecord && getString(firstDataRecord.url))
+
+  const taskId =
+    getString(source.id) ||
+    getString(source.task_id) ||
+    getString(source.taskId) ||
+    (dataRecord && (
+      getString(dataRecord.id) ||
+      getString(dataRecord.task_id) ||
+      getString(dataRecord.taskId)
+    )) ||
+    (content && !directVideoUrl ? content : null)
+
+  if (directVideoUrl) {
+    return {
+      id: taskId || crypto.randomUUID(),
+      status: getString(source.status) || 'completed',
+      video_url: directVideoUrl,
+      data: source.data || response,
+      raw: response,
+    }
+  }
+
+  if (taskId) {
+    return {
+      id: taskId,
+      status: getString(source.status) || 'processing',
+      data: source.data || response,
+      raw: response,
+    }
+  }
+
+  return {
+    status: 'failed',
+    error: 'Invalid Kling response',
+    details: content || data,
+    raw: data,
+  }
+}
+
+function normalizeVideoQueryResponse(data: unknown) {
+  const response = getRecord(data)
+  if (!response) return data
+
+  const dataRecord = getNestedRecord(response, 'data')
+  const firstDataRecord = getArrayItemRecord(response, 'data', 0)
+
+  const videoUrl =
+    getString(response.video_url) ||
+    getString(response.videoUrl) ||
+    getString(response.url) ||
+    (dataRecord && (
+      getString(dataRecord.video_url) ||
+      getString(dataRecord.videoUrl) ||
+      getString(dataRecord.url)
+    )) ||
+    (firstDataRecord && getString(firstDataRecord.url))
+
+  if (!videoUrl) return response
+
+  return {
+    ...response,
+    video_url: videoUrl,
   }
 }
 
@@ -62,12 +207,20 @@ export async function POST(req: Request) {
 
     const body = await req.json()
     const { prompt, aspectRatio, model, images, duration, enhance_prompt, enable_upsample, resolution } = body
-    const { apiKey, createEndpoint } = await getEndpoints(supabase)
+    const requestedModel = typeof model === 'string' ? model.trim() : ''
+    const { apiKey, createEndpoint, baseUrl } = await getEndpoints(supabase)
 
     if (!apiKey) {
       return NextResponse.json(
         { error: 'Configuration Error', details: 'API Key not found' },
         { status: 500 }
+      )
+    }
+
+    if (!requestedModel) {
+      return NextResponse.json(
+        { error: 'Validation Error', details: 'Model is required' },
+        { status: 400 }
       )
     }
 
@@ -89,7 +242,7 @@ export async function POST(req: Request) {
     }
 
     // 1. Check Credits & Deduct (using RPC for safety)
-    const cost = getModelCost(model)
+    const cost = await getModelCost(supabase, requestedModel)
     
     // Call the secure decrement function
     const { error: deductError } = await supabase.rpc('decrement_credits', { amount: cost })
@@ -102,18 +255,33 @@ export async function POST(req: Request) {
       )
     }
 
-    console.log(`[Video API] Creating task: ${model} for user ${user.id} (Cost: ${cost})`)
+    console.log(`[Video API] Creating task: ${requestedModel} for user ${user.id} (Cost: ${cost})`)
 
     // 2. Log Generation Start
     // Note: Frontend now handles the initial DB insertion.
     // We trust the frontend to update it with the Task ID.
 
-    let payload: any = {}
+    let payload: JsonRecord = {}
 
-    // Handle Sora Models
-    if (model && model.startsWith('sora')) {
+    const isKling = isKlingModel(requestedModel)
+
+    // Handle Kling models via Yunwu's OpenAI-compatible chat completions endpoint.
+    if (isKling) {
       payload = {
-        model: model,
+        model: requestedModel,
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+        stream: false,
+      }
+    }
+    // Handle Sora Models
+    else if (requestedModel.startsWith('sora')) {
+      payload = {
+        model: requestedModel,
         prompt: prompt,
         // Map aspectRatio to orientation
         orientation: aspectRatio === '16:9' ? 'landscape' : 'portrait',
@@ -140,7 +308,7 @@ export async function POST(req: Request) {
       const shouldUpsample = resolution === '1080p' || enable_upsample === true
 
       payload = {
-        model: model || 'veo3-fast',
+        model: requestedModel,
         prompt: prompt,
         enhance_prompt: enhance_prompt !== undefined ? enhance_prompt : true,
         enable_upsample: shouldUpsample,
@@ -161,14 +329,16 @@ export async function POST(req: Request) {
 
     // Debug payload structure (without full base64)
     const debugPayload = { ...payload }
-    if (debugPayload.images) {
-      debugPayload.images = debugPayload.images.map((img: string) => 
-        img.startsWith('data:') ? `${img.substring(0, 30)}...[base64]` : img
+    if (Array.isArray(debugPayload.images)) {
+      debugPayload.images = debugPayload.images.map((img: unknown) =>
+        typeof img === 'string' && img.startsWith('data:') ? `${img.substring(0, 30)}...[base64]` : img
       )
     }
     console.log('[Video API] Payload:', JSON.stringify(debugPayload, null, 2))
 
-    const response = await fetch(createEndpoint!, {
+    const endpoint = isKling ? `${baseUrl}/chat/completions` : createEndpoint!
+
+    const response = await fetch(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -204,21 +374,27 @@ export async function POST(req: Request) {
     // Usually 'pending' is fine until we get callback or poll result
     // But here we mark as 'processing' or keep 'pending'
     
+    if (isKling) {
+      const normalized = normalizeKlingCreateResponse(data)
+
+      if (!normalized.id) {
+        await supabase.rpc('increment_credits', { amount: cost })
+        return NextResponse.json(
+          { error: 'Provider Error', details: normalized },
+          { status: 502 }
+        )
+      }
+
+      return NextResponse.json(normalized)
+    }
+
     // Yunwu API returns { id: "...", status: "pending", ... }
     return NextResponse.json(data)
 
-  } catch (error: any) {
+  } catch (error) {
     console.error('[Video API] Internal Error:', error)
-    // Try to refund if possible (might fail if DB is down)
-    try {
-      const supabase = await createClient()
-      // We don't know cost here easily unless we parse body again, but let's assume we can't refund easily if we crashed before cost calc
-      // If we crashed after deduction, we should try to refund.
-      // For simplicity, we skip complex refund logic on crash for now.
-    } catch (e) {}
-
     return NextResponse.json(
-      { error: 'Internal Server Error', details: error.message },
+      { error: 'Internal Server Error', details: getErrorMessage(error) },
       { status: 500 }
     )
   }
@@ -262,12 +438,12 @@ export async function GET(req: Request) {
     // This would require finding the log entry by some ID, but we don't store external task ID in generations table yet.
     // For now, we just return the data.
 
-    return NextResponse.json(data)
+    return NextResponse.json(normalizeVideoQueryResponse(data))
 
-  } catch (error: any) {
+  } catch (error) {
     console.error('[Video API] Poll Internal Error:', error)
     return NextResponse.json(
-      { error: 'Internal Server Error', details: error.message },
+      { error: 'Internal Server Error', details: getErrorMessage(error) },
       { status: 500 }
     )
   }
